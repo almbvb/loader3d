@@ -9,6 +9,8 @@ import { snapFootprint } from './snapping';
 import { resizeBox } from './resize';
 import { findFreeSpot } from './spawn';
 import { classify, computeStats } from './stats';
+import { cargoRows, formatSeqList, summarizeLoad } from './report';
+import { loadingOrder, loadingSteps } from './loadingOrder';
 
 let n = 0;
 function item(dims: Partial<Dims>, pos: { x: number; y?: number; z: number }, id = `i${++n}`): CargoItem {
@@ -211,5 +213,84 @@ describe('geometry & placement', () => {
     expect(items[0].pos.x).toBe(after.bodies[0].box.max.x - 100);
     expect(orphans).toEqual(['t']);
     expect(items[2]).toBe(dock);
+  });
+});
+
+describe('report', () => {
+  it('measures the cargo inside each body', () => {
+    const base = item({ l: 120, w: 80, h: 150 }, { x: 1240, z: -122.5 });
+    const top = item({ l: 60, w: 60, h: 60 }, { x: 1250, y: 150, z: -110 });
+    const dock = item({}, { x: -400, z: 0 });
+    const summary = summarizeLoad([base, top, dock], layout);
+    const b = summary.bodies[0];
+    expect(b.count).toBe(2);
+    expect(b.floorUsed).toBeCloseTo(120 * 80);
+    expect(b.floorCapacity).toBe(1360 * 245);
+    expect(b.length).toBeCloseTo(120);
+    expect(b.width).toBeCloseTo(80);
+    expect(b.height).toBeCloseTo(210);
+    expect(summary.dock).toBe(1);
+  });
+
+  it('groups identical items of one place into a row', () => {
+    const pallets = [0, 100, 200].map((x) => ({ ...item({}, { x, z: 0 }), name: 'Паллета', weight: 400 }));
+    const heavier = { ...item({}, { x: 300, z: 0 }), name: 'Паллета', weight: 500 };
+    const waiting = { ...item({}, { x: -400, z: 0 }), name: 'Паллета', weight: 400 };
+    const rows = cargoRows([waiting, ...pallets, heavier], layout);
+    expect(rows.map((r) => [r.count, r.status])).toEqual([
+      [3, 'inside'],
+      [1, 'inside'],
+      [1, 'dock'],
+    ]);
+    expect(rows[0].seqs).toEqual(pallets.map((p) => p.seq));
+  });
+
+  it('writes numbers as ranges', () => {
+    expect(formatSeqList([5, 1, 2, 3, 9, 8])).toBe('1–3, 5, 8, 9');
+    expect(formatSeqList([])).toBe('');
+  });
+});
+
+describe('loading order', () => {
+  const ids = (list: CargoItem[]) => list.map((i) => i.id);
+
+  it('through the rear doors: from the front wall, each stack bottom-up', () => {
+    const front = item({}, { x: 1260, z: -100 }, 'front');
+    const onFront = item({}, { x: 1260, y: 100, z: -100 }, 'onFront');
+    const back = item({}, { x: 0, z: -100 }, 'back');
+    const beside = item({}, { x: 1260, z: 0 }, 'beside');
+    expect(ids(loadingOrder([back, onFront, beside, front], 'rear'))).toEqual(['front', 'beside', 'onFront', 'back']);
+  });
+
+  it('from the side: the far side first; from above: layer by layer', () => {
+    const far = item({}, { x: 0, z: -122.5 }, 'far');
+    const near = item({}, { x: 1260, z: 22.5 }, 'near');
+    expect(ids(loadingOrder([near, far], 'right'))).toEqual(['far', 'near']);
+    expect(ids(loadingOrder([far, near], 'left'))).toEqual(['near', 'far']);
+    expect(ids(loadingOrder([near, far], 'rear'))).toEqual(['near', 'far']);
+
+    const front = item({}, { x: 1260, z: 0 }, 'front');
+    const onFront = item({}, { x: 1260, y: 100, z: 0 }, 'onFront');
+    const back = item({}, { x: 0, z: 0 }, 'back');
+    expect(ids(loadingOrder([back, onFront, front], 'top'))).toEqual(['front', 'back', 'onFront']);
+    expect(ids(loadingOrder([back, onFront, front], 'rear'))).toEqual(['front', 'onFront', 'back']);
+  });
+
+  it('never puts an item before the one it stands on', () => {
+    // `high` overhangs `low` towards the front wall and the far side: by priority alone it would go first.
+    const low = item({ l: 300 }, { x: 0, z: 0 }, 'low');
+    const high = item({}, { x: 250, y: 100, z: -50 }, 'high');
+    for (const dir of ['rear', 'right', 'left', 'top'] as const) {
+      expect(ids(loadingOrder([high, low], dir))).toEqual(['low', 'high']);
+    }
+  });
+
+  it('makes steps of one row, skipping the dock', () => {
+    const row = [0, 1, 2, 3, 4].map((k) => item({ l: 100, w: 40 }, { x: 1260, z: -122.5 + k * 45 }));
+    const next = item({}, { x: 1100, z: 0 });
+    const dock = item({}, { x: -400, z: 0 });
+    const steps = loadingSteps([dock, next, ...row], layout, 'rear', 3);
+    expect(steps.map((s) => s.itemIds)).toEqual([ids(row.slice(0, 3)), ids(row.slice(3)), [next.id]]);
+    expect(steps.every((s) => s.bodyId === 'b1')).toBe(true);
   });
 });

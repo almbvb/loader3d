@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { itemBox } from '../core/item';
 import type { VehicleLayout } from '../core/layout';
 import { classify, computeStats, type Placement, type PlanStats } from '../core/stats';
-import type { Dims } from '../core/types';
-import { UNIT_LABEL, formatLength, type Units } from '../core/units';
+import type { Units } from '../core/units';
 import { getLayout, useStore } from '../store/useStore';
 
 export function useLayout(): VehicleLayout {
@@ -37,12 +36,6 @@ export function useMediaQuery(query: string): boolean {
     return () => mql.removeEventListener('change', onChange);
   }, [query]);
   return matches;
-}
-
-/** «80 × 150 × 120 см» — width × height × length, the order used in the cargo form. */
-export function dimsText(d: Dims, units: Units): string {
-  const f = (cm: number) => formatLength(cm, units, false);
-  return `${f(d.w)} × ${f(d.h)} × ${f(d.l)} ${UNIT_LABEL[units]}`;
 }
 
 const MODAL = '[role=dialog],[role=alertdialog],[role=menu],[role=listbox]';

@@ -1,3 +1,5 @@
+import type { Dims } from './types';
+
 export type Units = 'mm' | 'cm' | 'm';
 
 export const UNIT_LABEL: Record<Units, string> = { mm: 'мм', cm: 'см', m: 'м' };
@@ -34,6 +36,12 @@ export function formatPlain(cm: number, units: Units): string {
 export function formatLength(cm: number, units: Units, withUnit = true): string {
   const text = formatter(DIGITS[units], true).format(toUnits(cm, units));
   return withUnit ? `${text} ${UNIT_LABEL[units]}` : text;
+}
+
+/** «80 × 150 × 120 см» — width × height × length, the order used in the cargo form. */
+export function formatDims(d: Dims, units: Units): string {
+  const f = (cm: number) => formatLength(cm, units, false);
+  return `${f(d.w)} × ${f(d.h)} × ${f(d.l)} ${UNIT_LABEL[units]}`;
 }
 
 export function formatVolume(cm3: number): string {

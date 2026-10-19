@@ -15,8 +15,9 @@ export default defineConfig({
   server: { port: 5173, host: true, proxy: apiProxy },
   preview: { proxy: apiProxy },
   build: {
-    // three.js alone is ~520 kB minified; everything else stays well below.
-    chunkSizeWarningLimit: 600,
+    // pdfmake is ~1 MB minified but loads only when a PDF is exported; three.js is ~520 kB,
+    // everything else stays well below.
+    chunkSizeWarningLimit: 1050,
     rollupOptions: {
       // Long-lived vendor chunks stay cached between deploys; three.js loads only with the editor.
       output: {

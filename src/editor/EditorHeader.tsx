@@ -8,6 +8,7 @@ import {
   Download,
   Ellipsis,
   Eye,
+  FileText,
   FileUp,
   FolderOpen,
   Package,
@@ -308,8 +309,13 @@ function DisplayMenu() {
 
 function FileItems({ onReplace }: { onReplace(): void }) {
   const loadPlan = useStore((s) => s.loadPlan);
+  const setPdfOpen = useUi((s) => s.setPdfOpen);
   return (
     <>
+      <DropdownMenuItem onSelect={() => setPdfOpen(true)}>
+        <FileText /> Экспорт в PDF…
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
       <DropdownMenuItem onSelect={() => downloadPlan(usePlanSync.getState().name, exportPlan(useStore.getState()))}>
         <Download /> Скачать JSON
       </DropdownMenuItem>

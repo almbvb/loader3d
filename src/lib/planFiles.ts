@@ -17,10 +17,20 @@ export function planFromPreset(presetId: string): Plan {
 export function downloadPlan(name: string, plan: Plan): void {
   const data: Plan = { bodies: plan.bodies, items: plan.items, nextSeq: plan.nextSeq };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  saveBlob(blob, `${safeFileName(name, 'loader3d-plan')}.json`);
+}
+
+/** A plan name usable as a file name on any OS. */
+export function safeFileName(name: string, fallback: string): string {
+  return name.replace(/[\\/:*?"<>|]+/g, ' ').trim() || fallback;
+}
+
+/** Hands a generated file to the browser's downloads. */
+export function saveBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
-  const safe = name.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'loader3d-plan';
-  Object.assign(document.createElement('a'), { href: url, download: `${safe}.json` }).click();
-  URL.revokeObjectURL(url);
+  Object.assign(document.createElement('a'), { href: url, download: fileName }).click();
+  // Big files are read after the click returns: revoking at once could cut the download short.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export async function readPlanFile(file: File): Promise<{ name: string; plan: Plan }> {

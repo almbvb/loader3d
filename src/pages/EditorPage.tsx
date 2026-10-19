@@ -12,6 +12,7 @@ import { CargoPanel } from '@/editor/CargoPanel';
 import { ConflictDialog } from '@/editor/ConflictDialog';
 import { EditorHeader } from '@/editor/EditorHeader';
 import { HelpDialog } from '@/editor/HelpDialog';
+import { PdfExportDialog } from '@/editor/PdfExportDialog';
 import { Viewport } from '@/editor/Viewport';
 import { guardSceneShortcuts, useMediaQuery } from '@/editor/hooks';
 import { flush, hasUnsavedChanges, startSync, stopSync, usePlanSync } from '@/editor/planSync';
@@ -36,7 +37,7 @@ export function EditorPage() {
       .then((record) => {
         if (cancelled) return;
         useStore.getState().openPlan(record.data);
-        useUi.setState({ drawerOpen: false, autoloadOpen: false });
+        useUi.setState({ drawerOpen: false, autoloadOpen: false, pdfOpen: false });
         startSync(record);
         setState({ status: 'ready' });
       })
@@ -139,6 +140,7 @@ function EditorLayout() {
       </div>
       <HelpDialog />
       <AutoloadDialog />
+      <PdfExportDialog />
       <ConflictDialog />
     </div>
   );

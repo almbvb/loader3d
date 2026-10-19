@@ -14,7 +14,7 @@ import {
 import type { CargoItem, Dims } from '../core/types';
 import { CARGO_COLORS, CARGO_PRESETS, ITEM_WEIGHT_LIMIT } from '../core/presets';
 import type { Placement } from '../core/stats';
-import { formatVolume, formatWeight, type Units } from '../core/units';
+import { formatDims, formatVolume, formatWeight, type Units } from '../core/units';
 import { getEngine } from '../scene/engineRegistry';
 import { useStore } from '../store/useStore';
 import { useUi } from '../store/useUi';
@@ -37,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { plural } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { NumberField, Stepper, WeightField } from './fields';
-import { dimsText, usePlacements, useStats, useUnits } from './hooks';
+import { usePlacements, useStats, useUnits } from './hooks';
 
 const ITEMS = ['груз', 'груза', 'грузов'] as const;
 
@@ -121,7 +121,7 @@ function AddCargoForm() {
                   type="button"
                   role="radio"
                   aria-checked={preset === p}
-                  title={`${dimsText(p.dims, units)} · ${formatWeight(p.weight)}`}
+                  title={`${formatDims(p.dims, units)} · ${formatWeight(p.weight)}`}
                   onClick={() => {
                     setDims(p.dims);
                     setName(p.name);
@@ -328,7 +328,7 @@ function CargoRow({ item, placement, selected }: { item: CargoItem; placement?: 
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm leading-tight font-medium">{item.name}</span>
             <span className="block truncate text-xs text-muted-foreground tabular-nums">
-              {dimsText(item.dims, units)}
+              {formatDims(item.dims, units)}
               {item.weight ? ` · ${formatWeight(item.weight)}` : ''}
             </span>
           </span>
