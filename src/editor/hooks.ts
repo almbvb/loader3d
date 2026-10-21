@@ -1,13 +1,19 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import type { Vehicle } from '../core/types';
 import { itemBox } from '../core/item';
 import type { VehicleLayout } from '../core/layout';
 import { classify, computeStats, type Placement, type PlanStats } from '../core/stats';
 import type { Units } from '../core/units';
-import { getLayout, useStore } from '../store/useStore';
+import { activeVehicle, getLayout, useStore } from '../store/useStore';
 
 export function useLayout(): VehicleLayout {
-  const bodies = useStore((s) => s.bodies);
-  return getLayout(bodies);
+  const vehicles = useStore((s) => s.vehicles);
+  const dockMode = useStore((s) => s.dockMode);
+  return getLayout(vehicles, dockMode);
+}
+
+export function useActiveVehicle(): Vehicle {
+  return useStore(activeVehicle);
 }
 
 export function usePlacements(): Map<string, Placement> {
@@ -39,7 +45,7 @@ export function useMediaQuery(query: string): boolean {
 }
 
 const MODAL = '[role=dialog],[role=alertdialog],[role=menu],[role=listbox]';
-const ARROW_WIDGETS = '[role=tablist],[role=radiogroup],[role=combobox],[aria-haspopup]';
+const ARROW_WIDGETS = '[role=tablist],[role=radiogroup],[role=combobox],[role=slider],[aria-haspopup]';
 
 /**
  * The scene listens for shortcuts on window (Del, R, arrows...). Keys pressed inside menus and

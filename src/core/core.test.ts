@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import type { Box, CargoBody, CargoItem, Dims } from './types';
+import type { Box, CargoBody, CargoItem, Dims, DockMode, Orientation, Plan } from './types';
 import { boxAt, inRects, subtractBox, volume } from './geometry';
 import { itemBox } from './item';
-import { computeLayout, remapItems } from './layout';
+import { LANE_SPACING, computeLayout, onFloor, ownerVehicle, remapItems, stagingRegion, stagingRegions } from './layout';
+import { effectiveDims, intrinsicDims, rotate90 } from './orientation';
+import { parsePlan, relayout, vehiclePlan } from './plan';
+import { layoutOf, vehicle } from './testing';
+import { findOccluders, segmentHitsBox } from './xray';
 import { collectStack, findCollisions, findFloating, settle } from './physics';
 import { beginMove, evaluateMove, finishMove } from './move';
 import { snapFootprint } from './snapping';
 import { resizeBox } from './resize';
-import { findFreeSpot } from './spawn';
+import { dockSpot, findFreeSpot } from './spawn';
 import { classify, computeStats } from './stats';
 import { cargoRows, formatSeqList, summarizeLoad } from './report';
 import { loadingOrder, loadingSteps } from './loadingOrder';
@@ -26,7 +30,7 @@ function item(dims: Partial<Dims>, pos: { x: number; y?: number; z: number }, id
 }
 
 const body = (l = 1360, w = 245, h = 270, id = 'b1'): CargoBody => ({ id, name: id, kind: 'semi', dims: { l, w, h } });
-const layout = computeLayout([body()]);
+const layout = layoutOf([body()]);
 const ctx = { floors: layout.floors, walls: layout.walls, snapThreshold: 0 };
 
 describe('settle (gravity)', () => {
@@ -204,8 +208,8 @@ describe('geometry & placement', () => {
   });
 
   it('keeps cargo attached to the front wall when the body changes', () => {
-    const before = computeLayout([body(1360, 245, 270, 'semi'), body(800, 245, 270, 'tr')]);
-    const after = computeLayout([body(1360, 245, 270, 'semi')]);
+    const before = layoutOf([body(1360, 245, 270, 'semi'), body(800, 245, 270, 'tr')]);
+    const after = layoutOf([body(1360, 245, 270, 'semi')]);
     const front = item({}, { x: before.bodies[0].box.max.x - 100, z: 0 }, 'f');
     const trailer = item({}, { x: 100, z: 0 }, 't');
     const dock = item({}, { x: -400, z: 0 }, 'd');
@@ -292,5 +296,206 @@ describe('loading order', () => {
     const steps = loadingSteps([dock, next, ...row], layout, 'rear', 3);
     expect(steps.map((s) => s.itemIds)).toEqual([ids(row.slice(0, 3)), ids(row.slice(3)), [next.id]]);
     expect(steps.every((s) => s.bodyId === 'b1')).toBe(true);
+  });
+});
+
+describe('orientation (tilting)', () => {
+  const dims = { l: 120, w: 80, h: 150 };
+  const all = (o: Orientation) => effectiveDims(dims, o);
+
+  it('turns about each world axis by swapping the two other sizes', () => {
+    const upright: Orientation = { yaw: 0 };
+    expect(all(rotate90(upright, 'y'))).toEqual({ l: 80, w: 120, h: 150 });
+    expect(all(rotate90(upright, 'x'))).toEqual({ l: 120, w: 150, h: 80 });
+    expect(all(rotate90(upright, 'z'))).toEqual({ l: 150, w: 80, h: 120 });
+  });
+
+  it('reaches all six orientations and comes back after two turns', () => {
+    const seen = new Set<string>();
+    let frontier: Orientation[] = [{ yaw: 0 }];
+    while (frontier.length) {
+      const next: Orientation[] = [];
+      for (const o of frontier) {
+        const key = JSON.stringify(all(o));
+        if (seen.has(key)) continue;
+        seen.add(key);
+        for (const axis of ['x', 'y', 'z'] as const) {
+          expect(all(rotate90(rotate90(o, axis), axis))).toEqual(all(o));
+          next.push(rotate90(o, axis));
+        }
+      }
+      frontier = next;
+    }
+    expect(seen.size).toBe(6);
+  });
+
+  it('keeps old plans as they were: upright has no `up`', () => {
+    expect(rotate90({ yaw: 0 }, 'y')).toEqual({ yaw: 90 });
+    expect(rotate90(rotate90({ yaw: 0 }, 'x'), 'x')).toEqual({ yaw: 0 });
+    expect(rotate90({ yaw: 0 }, 'z')).toEqual({ yaw: 90, up: 'l' });
+  });
+
+  it('converts world sizes back to own dimensions for any orientation', () => {
+    for (const o of [{ yaw: 0 }, { yaw: 90 }, { yaw: 0, up: 'l' }, { yaw: 90, up: 'w' }] as Orientation[]) {
+      expect(intrinsicDims(effectiveDims(dims, o), o)).toEqual(dims);
+    }
+  });
+
+  it('settles a tilted item on the floor with its new height', () => {
+    const tilted = { ...item({ l: 300, w: 50, h: 100 }, { x: 0, y: 40, z: 0 }), orientation: { yaw: 0, up: 'l' } as Orientation };
+    const [out] = settle([tilted]);
+    expect(out.pos.y).toBe(0);
+    expect(itemBox(out).max.y).toBe(300);
+  });
+});
+
+describe('several vehicles', () => {
+  const semi = (id: string) => body(1360, 245, 270, id);
+  const two = (mode: DockMode) => computeLayout([vehicle([semi('a1')], 'A'), vehicle([semi('b1')], 'B')], mode);
+
+  it('parks vehicles side by side with their rear doors on the dock edge', () => {
+    for (const mode of ['shared', 'own'] as const) {
+      const l = two(mode);
+      expect(l.vehicles.map((v) => v.lane)).toEqual([0, LANE_SPACING[mode]]);
+      expect(l.bodies.map((b) => b.box.min.x)).toEqual([0, 0]);
+      expect(l.bodies[1].box.min.z).toBe(LANE_SPACING[mode] - 122.5);
+      expect(l.bodies[1].vehicleId).toBe('B');
+    }
+    expect(two('shared').docks).toHaveLength(1);
+    expect(two('own').docks).toHaveLength(2);
+    expect(two('own').docks[0].maxZ).toBeLessThan(two('own').docks[1].minZ);
+  });
+
+  it('lays out a single vehicle exactly as before', () => {
+    expect(layout.docks).toEqual([{ minX: -900, maxX: 0, minZ: -650, maxZ: 650 }]);
+    expect(stagingRegion(layout)).toEqual({ minX: -870, maxX: -70, minZ: -620, maxZ: 620 });
+  });
+
+  it('counts cargo per vehicle and per dock', () => {
+    const l = two('own');
+    const inB = item({}, { x: 100, z: l.vehicles[1].lane }, 'inB');
+    const onDockB = item({}, { x: -400, z: l.vehicles[1].lane }, 'dockB');
+    const onDockA = item({}, { x: -400, z: 0 }, 'dockA');
+    const stats = computeStats([inB, onDockB, onDockA], l);
+    expect(stats.vehicles.map((v) => [v.inside, v.dock])).toEqual([
+      [0, 1],
+      [1, 1],
+    ]);
+    const shared = computeStats([onDockA, { ...onDockB, pos: { ...onDockB.pos, z: 300 } }], two('shared'));
+    expect(shared.vehicles.map((v) => v.dock)).toEqual([2, 2]);
+  });
+
+  it('knows which vehicle cargo belongs to', () => {
+    const l = two('own');
+    expect(ownerVehicle(itemBox(item({}, { x: 100, z: l.vehicles[1].lane })), l)?.vehicle.id).toBe('B');
+    expect(ownerVehicle(itemBox(item({}, { x: -400, z: l.vehicles[1].lane })), l)?.vehicle.id).toBe('B');
+    expect(ownerVehicle(itemBox(item({}, { x: -400, z: 0 })), two('shared'))).toBeNull();
+  });
+
+  it('puts new cargo of a vehicle behind it on a shared dock', () => {
+    const l = computeLayout([vehicle([semi('a1')], 'A'), vehicle([semi('b1')], 'B'), vehicle([semi('c1')], 'C')]);
+    const [region] = stagingRegions(l, 'B');
+    expect(region.minZ).toBeGreaterThan(0);
+    expect(region.maxZ).toBeLessThan(l.vehicles[2].lane);
+    const spot = dockSpot({ l: 120, w: 80, h: 150 }, l, 'B', []);
+    expect(Math.abs(spot.z + 40 - l.vehicles[1].lane)).toBeLessThan(LANE_SPACING.shared / 2);
+  });
+
+  it('moves cargo with its vehicle when the dock mode changes', () => {
+    const shared = two('shared');
+    const own = two('own');
+    const laneB = shared.vehicles[1].lane;
+    const inB = item({}, { x: 600, z: laneB - 50 }, 'inB');
+    const behindB = item({}, { x: -400, z: laneB + 20 }, 'behindB');
+    const behindA = item({}, { x: -400, z: -300 }, 'behindA');
+    const out = relayout([inB, behindB, behindA], shared, own);
+    const byId = new Map(out.map((i) => [i.id, i]));
+    expect(byId.get('inB')!.pos).toEqual({ x: 600, y: 0, z: own.vehicles[1].lane - 50 });
+    expect(byId.get('behindB')!.pos.z).toBe(own.vehicles[1].lane + 20);
+    expect(byId.get('behindA')!.pos.z).toBe(-300);
+    expect(ownerVehicle(itemBox(byId.get('behindB')!), own)?.vehicle.id).toBe('B');
+  });
+
+  it('never leaves cargo overlapping when own docks merge into one', () => {
+    const own = two('own');
+    const shared = two('shared');
+    // The same spot behind each vehicle: after the merge the lanes are closer, the second one has to move.
+    const a = item({ l: 200, w: 400 }, { x: -500, z: 300 }, 'a');
+    const b = item({ l: 200, w: 400 }, { x: -500, z: own.vehicles[1].lane - 200 }, 'b');
+    const out = relayout([a, b], own, shared);
+    expect(findCollisions(out)).toEqual([]);
+    expect(findFloating(out)).toEqual([]);
+    expect(out.every((i) => i.pos.y === 0 && onFloor(itemBox(i), shared))).toBe(true);
+  });
+
+  it('sends the cargo of a removed vehicle to the dock', () => {
+    const before = two('own');
+    const after = computeLayout([vehicle([semi('a1')], 'A')], 'own');
+    const inB = item({}, { x: 600, z: before.vehicles[1].lane }, 'inB');
+    const inA = item({}, { x: 600, z: 0 }, 'inA');
+    const out = relayout([inA, inB], before, after, 'A');
+    expect(out[0]).toBe(inA);
+    expect(classify(itemBox(out[1]), after).status).toBe('dock');
+    expect(onFloor(itemBox(out[1]), after)).toBe(true);
+  });
+
+  it('cuts one vehicle out of a plan for its report', () => {
+    const vehicles = [vehicle([semi('a1')], 'A'), vehicle([semi('b1')], 'B')];
+    const laneB = computeLayout(vehicles, 'own').vehicles[1].lane;
+    const plan: Plan = {
+      vehicles,
+      dockMode: 'own',
+      items: [item({}, { x: 600, z: 0 }, 'inA'), item({}, { x: 600, z: laneB }, 'inB'), item({}, { x: -400, z: laneB }, 'dockB')],
+      nextSeq: 1,
+    };
+    const sub = vehiclePlan(plan, 'B');
+    expect(sub.vehicles.map((v) => v.id)).toEqual(['B']);
+    expect(sub.items.map((i) => [i.id, i.pos.z])).toEqual([
+      ['inB', 0],
+      ['dockB', 0],
+    ]);
+    const sharedLaneB = computeLayout(vehicles, 'shared').vehicles[1].lane;
+    const shared: Plan = {
+      ...plan,
+      dockMode: 'shared',
+      items: [item({}, { x: 600, z: sharedLaneB }, 'inB'), item({}, { x: -400, z: sharedLaneB }, 'dockB')],
+    };
+    expect(vehiclePlan(shared, 'B').items.map((i) => i.id)).toEqual(['inB']);
+  });
+
+  it('reads plans saved before several vehicles', () => {
+    const legacy = { bodies: [semi('x')], items: [item({}, { x: 0, z: 0 }, 'i')], nextSeq: 2 };
+    const plan = parsePlan(legacy)!;
+    expect(plan.vehicles).toEqual([{ id: 'veh-1', name: 'Машина 1', bodies: legacy.bodies }]);
+    expect(plan.dockMode).toBe('shared');
+    expect(parsePlan({ vehicles: [], items: [], nextSeq: 1 })).toBeNull();
+    expect(parsePlan({ vehicles: [{ id: 'v', bodies: [] }], items: [], nextSeq: 1 })).toBeNull();
+    expect(parsePlan({ items: [] })).toBeNull();
+  });
+});
+
+describe('x-ray', () => {
+  // Orthographic look along +X from far away: screen x = z, screen y = y, depth = x + 10000.
+  const eye = { x: -10000, y: 50, z: 50 };
+  const toScreen = (p: { x: number; y: number; z: number }) => ({ x: p.z, y: p.y, depth: p.x + 10000 });
+  const entry = (id: string, x: number, z = 0, y = 0) => ({ id, box: boxAt({ x, y, z }, { l: 100, w: 100, h: 100 }) });
+
+  it('finds what stands between the camera and a target', () => {
+    const entries = [entry('target', 500), entry('front', 0), entry('beside', 0, 300), entry('behind', 800)];
+    expect([...findOccluders(eye, entries, toScreen, (id) => id === 'target')]).toEqual(['front']);
+  });
+
+  it('finds every box hiding another one, limited by canOcclude', () => {
+    const entries = [entry('a', 0), entry('b', 200), entry('c', 400), entry('d', 0, 300)];
+    expect([...findOccluders(eye, entries, toScreen, () => true)].sort()).toEqual(['a', 'b']);
+    expect([...findOccluders(eye, entries, toScreen, () => true, (id) => id !== 'b')]).toEqual(['a']);
+  });
+
+  it('does not count a box the target only rests on', () => {
+    const entries = [entry('target', 0, 0, 100), entry('under', 0, 0, 0)];
+    const above = { x: 50, y: 5000, z: 50 };
+    const down = (p: { x: number; y: number; z: number }) => ({ x: p.z, y: p.x, depth: 5000 - p.y });
+    expect(findOccluders(above, entries, down, (id) => id === 'target').size).toBe(0);
+    expect(segmentHitsBox({ x: -10, y: 50, z: 50 }, { x: 150, y: 50, z: 50 }, entries[1].box)).toBe(true);
   });
 });

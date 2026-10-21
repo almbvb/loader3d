@@ -1,12 +1,13 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import type { CargoBody, CargoItem, Dims, Plan } from '../core/types';
-import { computeLayout, remapItems, stagingRegion, type VehicleLayout } from '../core/layout';
+import type { CargoBody, CargoItem, Dims, DockMode, Plan, Vehicle } from '../core/types';
+import { computeLayout, ownerVehicle, type VehicleLayout } from '../core/layout';
 import { itemBox, itemSize, sanitizeItemDims, uid } from '../core/item';
 import { settle } from '../core/physics';
-import { findFreeSpot } from '../core/spawn';
-import { effectiveDims, rotateYaw90 } from '../core/orientation';
+import { dockSpot } from '../core/spawn';
+import { effectiveDims, rotate90, type RotationAxis } from '../core/orientation';
 import { beginMove, evaluateMove, finishMove } from '../core/move';
+import { nextVehicleName, parsePlan, relayout } from '../core/plan';
 import {
   BODY_LIMITS,
   BODY_MAX_LOAD_LIMIT,
@@ -14,10 +15,17 @@ import {
   ITEM_WEIGHT_LIMIT,
   DEFAULT_TRAILER,
   MAX_BODIES,
+  MAX_VEHICLES,
   VEHICLE_PRESETS,
   type BodyTemplate,
 } from '../core/presets';
 import type { Units } from '../core/units';
+
+/**
+ * See-through cargo: nothing, the cargo in front of the selected item, every item that hides
+ * another one, or all cargo but the selected item.
+ */
+export type XrayMode = 'off' | 'selection' | 'auto' | 'all';
 
 export interface Settings {
   highlightOverflow: boolean;
@@ -27,7 +35,14 @@ export interface Settings {
   resizeHandles: boolean;
   cameraLocked: boolean;
   units: Units;
+  /** Quarter turns about all three axes (tipping cargo over), not only about the vertical. */
+  allowTilt: boolean;
+  xray: XrayMode;
+  /** Opacity of see-through cargo, XRAY_OPACITY_RANGE. */
+  xrayOpacity: number;
 }
+
+export const XRAY_OPACITY_RANGE: [number, number] = [0.08, 0.8];
 
 /** The undoable part of the state. */
 export interface PlanState extends Plan {
@@ -52,6 +67,8 @@ export interface NewCargo {
 
 export interface AppState extends PlanState {
   selectedId: string | null;
+  /** The vehicle the transport panel, the stats and new cargo refer to. Not part of the plan. */
+  activeVehicleId: string;
   settings: Settings;
   history: History;
 
@@ -61,25 +78,36 @@ export interface AppState extends PlanState {
   applyItems(items: CargoItem[], key?: string): void;
   removeItem(id: string): void;
   duplicateItem(id: string): void;
-  rotateItem(id: string): void;
+  /** A quarter turn about a world axis (default: the vertical). */
+  rotateItem(id: string, axis?: RotationAxis): void;
   nudgeItem(id: string, dx: number, dz: number): void;
   clearItems(): void;
+  /** Selecting cargo in another vehicle makes that vehicle the active one. */
   select(id: string | null): void;
 
   updateBody(id: string, dims: Dims): void;
   /** Payload capacity in kg; undefined removes the limit. */
   setBodyMaxLoad(id: string, maxLoad: number | undefined): void;
-  addTrailer(): void;
+  addTrailer(vehicleId?: string): void;
   removeBody(id: string): void;
-  applyVehiclePreset(presetId: string): void;
+  /** Replaces the bodies of a vehicle (default: the active one). */
+  applyVehiclePreset(presetId: string, vehicleId?: string): void;
+
+  /** Adds a vehicle of a preset next to the others and makes it active; returns its id. */
+  addVehicle(presetId: string): string | null;
+  /** Cargo of the removed vehicle goes to the dock. */
+  removeVehicle(id: string): void;
+  renameVehicle(id: string, name: string): void;
+  setDockMode(mode: DockMode): void;
+  setActiveVehicle(id: string): void;
 
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;
   undo(): void;
   redo(): void;
   /** Replaces the plan as an undoable edit (import from a file, the example). */
-  loadPlan(plan: Plan): void;
+  loadPlan(plan: unknown): void;
   /** Opens a saved plan: replaces everything and starts a fresh undo history. */
-  openPlan(plan: Plan): void;
+  openPlan(plan: unknown): void;
 }
 
 const HISTORY_LIMIT = 100;
@@ -93,22 +121,29 @@ const DEFAULT_SETTINGS: Settings = {
   resizeHandles: true,
   cameraLocked: false,
   units: 'cm',
+  allowTilt: false,
+  xray: 'selection',
+  xrayOpacity: 0.22,
 };
 
-const layoutCache = new WeakMap<readonly CargoBody[], VehicleLayout>();
+const layoutCache = new WeakMap<readonly Vehicle[], Partial<Record<DockMode, VehicleLayout>>>();
 
-/** Memoized layout of the current bodies array. */
-export function getLayout(bodies: readonly CargoBody[]): VehicleLayout {
-  let layout = layoutCache.get(bodies);
-  if (!layout) {
-    layout = computeLayout(bodies);
-    layoutCache.set(bodies, layout);
+/** Memoized layout of the current vehicles array. */
+export function getLayout(vehicles: readonly Vehicle[], dockMode: DockMode): VehicleLayout {
+  let byMode = layoutCache.get(vehicles);
+  if (!byMode) {
+    byMode = {};
+    layoutCache.set(vehicles, byMode);
   }
-  return layout;
+  return (byMode[dockMode] ??= computeLayout(vehicles, dockMode));
+}
+
+export function layoutOf(s: Pick<Plan, 'vehicles' | 'dockMode'>): VehicleLayout {
+  return getLayout(s.vehicles, s.dockMode);
 }
 
 function pickPlan(s: PlanState): PlanState {
-  return { bodies: s.bodies, items: s.items, nextSeq: s.nextSeq, paletteIndex: s.paletteIndex };
+  return { vehicles: s.vehicles, dockMode: s.dockMode, items: s.items, nextSeq: s.nextSeq, paletteIndex: s.paletteIndex };
 }
 
 function makeBody(t: BodyTemplate, id = uid('body')): CargoBody {
@@ -127,41 +162,38 @@ function clampBodyDims(d: Dims): Dims {
   return { l: clamp(d.l, BODY_LIMITS.l), w: clamp(d.w, BODY_LIMITS.w), h: clamp(d.h, BODY_LIMITS.h) };
 }
 
-/** Puts `item` on a free spot of the dock (or on top of something there if the dock is full). */
-function placeOnDock(item: CargoItem, existing: readonly CargoItem[], layout: VehicleLayout): CargoItem {
-  const region = stagingRegion(layout);
-  const size = itemSize(item);
-  const spot = findFreeSpot(size, region, existing.map(itemBox)) ?? {
-    x: region.maxX - size.l,
-    z: region.minZ,
-  };
+/** Puts `item` on a free spot of the vehicle's dock (or on top of something there if it is full). */
+function placeOnDock(
+  item: CargoItem,
+  existing: readonly CargoItem[],
+  layout: VehicleLayout,
+  vehicleId: string | null,
+): CargoItem {
+  const spot = dockSpot(itemSize(item), layout, vehicleId, existing.map(itemBox));
   return { ...item, pos: { x: spot.x, y: 0, z: spot.z } };
 }
 
-/** Moves cargo along with its body after the vehicle changed; cargo of removed bodies goes to the dock. */
-function rebody(items: readonly CargoItem[], from: CargoBody[], to: CargoBody[]): CargoItem[] {
-  const toLayout = getLayout(to);
-  const { items: remapped, orphans } = remapItems(items, getLayout(from), toLayout);
-  if (orphans.length === 0) return settle(remapped);
-  const orphanIds = new Set(orphans);
-  const placed = remapped.filter((i) => !orphanIds.has(i.id));
-  const moved = new Map<string, CargoItem>();
-  for (const item of remapped) {
-    if (!orphanIds.has(item.id)) continue;
-    const next = placeOnDock(item, placed, toLayout);
-    placed.push(next);
-    moved.set(item.id, next);
-  }
-  return settle(
-    remapped.map((i) => moved.get(i.id) ?? i),
-    { yieldIds: orphanIds },
-  );
+/** Vehicles with the body `id` changed by `change` (null removes it). */
+function mapBody(vehicles: Vehicle[], id: string, change: (b: CargoBody) => CargoBody | null): Vehicle[] {
+  return vehicles.map((v) => {
+    if (!v.bodies.some((b) => b.id === id)) return v;
+    const bodies: CargoBody[] = [];
+    for (const b of v.bodies) {
+      const next = b.id === id ? change(b) : b;
+      if (next) bodies.push(next);
+    }
+    return { ...v, bodies };
+  });
+}
+
+function keepActive(vehicles: readonly Vehicle[], id: string): string {
+  return vehicles.some((v) => v.id === id) ? id : vehicles[0].id;
 }
 
 export function createDemoPlan(): PlanState {
   const preset = VEHICLE_PRESETS[0];
-  const bodies = preset.bodies.map((b) => makeBody(b));
-  const layout = getLayout(bodies);
+  const vehicles: Vehicle[] = [{ id: uid('veh'), name: nextVehicleName([]), bodies: preset.bodies.map((b) => makeBody(b)) }];
+  const layout = computeLayout(vehicles, 'shared');
   const body = layout.bodies[0].box;
   const items: CargoItem[] = [];
   let seq = 1;
@@ -182,7 +214,7 @@ export function createDemoPlan(): PlanState {
       color,
       weight,
     };
-    items.push(pos ? { ...item, pos: { x: pos.x, y: pos.y ?? 0, z: pos.z } } : placeOnDock(item, items, layout));
+    items.push(pos ? { ...item, pos: { x: pos.x, y: pos.y ?? 0, z: pos.z } } : placeOnDock(item, items, layout, null));
   };
 
   // Two rows of euro pallets against the front wall, three across.
@@ -200,19 +232,7 @@ export function createDemoPlan(): PlanState {
   for (let i = 0; i < 2; i++) add('Финпаллета', { l: 120, w: 100, h: 150 }, 600, CARGO_COLORS[2]);
   add('Длинномер', { l: 320, w: 60, h: 60 }, 180, CARGO_COLORS[3]);
 
-  return { bodies, items: settle(items), nextSeq: seq, paletteIndex: 5 };
-}
-
-export function isValidPlan(p: unknown): p is Plan {
-  if (!p || typeof p !== 'object') return false;
-  const plan = p as Partial<Plan>;
-  return (
-    Array.isArray(plan.bodies) &&
-    plan.bodies.length > 0 &&
-    plan.bodies.every((b) => b && typeof b.id === 'string' && b.dims && b.dims.l > 0) &&
-    Array.isArray(plan.items) &&
-    plan.items.every((i) => i && typeof i.id === 'string' && i.dims && i.pos && i.orientation)
-  );
+  return { vehicles, dockMode: 'shared', items: settle(items), nextSeq: seq, paletteIndex: 5 };
 }
 
 export const useStore = create<AppState>()(
@@ -223,21 +243,42 @@ export const useStore = create<AppState>()(
         const now = Date.now();
         const coalesce = key !== undefined && s.history.lastKey === key && now - s.history.lastAt < COALESCE_MS;
         const past = coalesce ? s.history.past : [...s.history.past, pickPlan(s)].slice(-HISTORY_LIMIT);
-        set({ ...patch, ...extra, history: { past, future: [], lastKey: key ?? null, lastAt: now } });
+        const vehicles = patch.vehicles ?? s.vehicles;
+        const activeVehicleId = keepActive(vehicles, extra.activeVehicleId ?? s.activeVehicleId);
+        set({ ...patch, ...extra, activeVehicleId, history: { past, future: [], lastKey: key ?? null, lastAt: now } });
       };
 
       const keepSelection = (items: CargoItem[], selectedId: string | null) =>
         selectedId && items.some((i) => i.id === selectedId) ? selectedId : null;
 
+      /** The vehicle an item belongs to, if any. */
+      const vehicleOf = (s: Pick<AppState, 'vehicles' | 'dockMode'>, item: CargoItem | undefined) =>
+        item ? (ownerVehicle(itemBox(item), layoutOf(s))?.vehicle.id ?? null) : null;
+
+      /** New vehicles; cargo moves along, cargo of removed bodies goes to the dock. */
+      const withVehicles = (s: AppState, vehicles: Vehicle[], dockMode = s.dockMode, fallback = s.activeVehicleId) => ({
+        vehicles,
+        dockMode,
+        items: relayout(s.items, layoutOf(s), getLayout(vehicles, dockMode), keepActive(vehicles, fallback)),
+      });
+
+      const setBodies = (s: AppState, vehicleId: string, change: (bodies: CargoBody[]) => CargoBody[]) =>
+        withVehicles(
+          s,
+          s.vehicles.map((v) => (v.id === vehicleId ? { ...v, bodies: change(v.bodies) } : v)),
+        );
+
+      const demo = createDemoPlan();
       return {
-        ...createDemoPlan(),
+        ...demo,
         selectedId: null,
+        activeVehicleId: demo.vehicles[0].id,
         settings: DEFAULT_SETTINGS,
         history: { past: [], future: [], lastKey: null, lastAt: 0 },
 
         addItems({ dims, name, count = 1, weight }) {
           const s = get();
-          const layout = getLayout(s.bodies);
+          const layout = layoutOf(s);
           const color = CARGO_COLORS[s.paletteIndex % CARGO_COLORS.length];
           const clean = sanitizeItemDims(dims);
           let items = [...s.items];
@@ -257,6 +298,7 @@ export const useStore = create<AppState>()(
               },
               items,
               layout,
+              s.activeVehicleId,
             );
             seq++;
             ids.add(item.id);
@@ -287,7 +329,12 @@ export const useStore = create<AppState>()(
         },
 
         applyItems(items, key) {
-          commit({ items: settle(items) }, { selectedId: keepSelection(items, get().selectedId) }, key);
+          const s = get();
+          const settled = settle(items);
+          const selectedId = keepSelection(settled, s.selectedId);
+          // A dragged item takes the active vehicle along to wherever it was dropped.
+          const follow = key === undefined ? vehicleOf(s, settled.find((i) => i.id === selectedId)) : null;
+          commit({ items: settled }, { selectedId, activeVehicleId: follow ?? s.activeVehicleId }, key);
         },
 
         removeItem(id) {
@@ -303,18 +350,20 @@ export const useStore = create<AppState>()(
           const copy = placeOnDock(
             { ...source, id: uid('cargo'), seq: s.nextSeq, pos: { ...source.pos } },
             s.items,
-            getLayout(s.bodies),
+            layoutOf(s),
+            vehicleOf(s, source) ?? s.activeVehicleId,
           );
           const items = settle([...s.items, copy], { yieldIds: new Set([copy.id]) });
           commit({ items, nextSeq: s.nextSeq + 1 }, { selectedId: copy.id });
         },
 
-        rotateItem(id) {
+        rotateItem(id, axis = 'y') {
           const s = get();
           const items = s.items.map((i) => {
             if (i.id !== id) return i;
+            // About the centre of the footprint; the bottom stays where it was, gravity does the rest.
             const box = itemBox(i);
-            const orientation = rotateYaw90(i.orientation);
+            const orientation = rotate90(i.orientation, axis);
             const size = effectiveDims(i.dims, orientation);
             const cx = (box.min.x + box.max.x) / 2;
             const cz = (box.min.z + box.max.z) / 2;
@@ -326,7 +375,7 @@ export const useStore = create<AppState>()(
         nudgeItem(id, dx, dz) {
           const s = get();
           if (!s.items.some((i) => i.id === id)) return;
-          const layout = getLayout(s.bodies);
+          const layout = layoutOf(s);
           const session = beginMove(s.items, id, true);
           const root = session.members[0];
           const result = evaluateMove(
@@ -343,53 +392,99 @@ export const useStore = create<AppState>()(
         },
 
         select(id) {
-          if (get().selectedId !== id) set({ selectedId: id });
+          const s = get();
+          const activeVehicleId = vehicleOf(s, s.items.find((i) => i.id === id)) ?? s.activeVehicleId;
+          if (s.selectedId !== id || s.activeVehicleId !== activeVehicleId) set({ selectedId: id, activeVehicleId });
         },
 
         updateBody(id, dims) {
           const s = get();
-          const bodies = s.bodies.map((b) => (b.id === id ? { ...b, dims: clampBodyDims(dims) } : b));
-          commit({ bodies, items: rebody(s.items, s.bodies, bodies) }, {}, `body:${id}`);
+          const vehicles = mapBody(s.vehicles, id, (b) => ({ ...b, dims: clampBodyDims(dims) }));
+          commit(withVehicles(s, vehicles), {}, `body:${id}`);
         },
 
         setBodyMaxLoad(id, maxLoad) {
           const s = get();
-          const bodies = s.bodies.map((b) => {
-            if (b.id !== id) return b;
+          const vehicles = mapBody(s.vehicles, id, (b) => {
             const { maxLoad: _, ...rest } = b;
             return maxLoad === undefined
               ? rest
               : { ...rest, maxLoad: Math.min(BODY_MAX_LOAD_LIMIT, Math.max(0, Math.round(maxLoad))) };
           });
-          commit({ bodies }, {}, `body-load:${id}`);
+          commit({ vehicles }, {}, `body-load:${id}`);
         },
 
-        addTrailer() {
+        addTrailer(vehicleId) {
           const s = get();
-          if (s.bodies.length >= MAX_BODIES) return;
-          const last = s.bodies[s.bodies.length - 1];
+          const target = s.vehicles.find((v) => v.id === (vehicleId ?? s.activeVehicleId));
+          if (!target || target.bodies.length >= MAX_BODIES) return;
+          const last = target.bodies[target.bodies.length - 1];
           const trailer = makeBody({
             ...DEFAULT_TRAILER,
             dims: { ...DEFAULT_TRAILER.dims, w: last.dims.w, h: last.dims.h },
           });
-          const bodies = [...s.bodies, trailer];
-          commit({ bodies, items: rebody(s.items, s.bodies, bodies) });
+          commit(setBodies(s, target.id, (bodies) => [...bodies, trailer]), { activeVehicleId: target.id });
         },
 
         removeBody(id) {
           const s = get();
-          if (s.bodies.length <= 1) return;
-          const bodies = s.bodies.filter((b) => b.id !== id);
-          commit({ bodies, items: rebody(s.items, s.bodies, bodies) });
+          const owner = s.vehicles.find((v) => v.bodies.some((b) => b.id === id));
+          if (!owner || owner.bodies.length <= 1) return;
+          commit(withVehicles(s, mapBody(s.vehicles, id, () => null), s.dockMode, owner.id));
         },
 
-        applyVehiclePreset(presetId) {
+        applyVehiclePreset(presetId, vehicleId) {
           const s = get();
           const preset = VEHICLE_PRESETS.find((p) => p.id === presetId);
-          if (!preset) return;
+          const target = s.vehicles.find((v) => v.id === (vehicleId ?? s.activeVehicleId));
+          if (!preset || !target) return;
           // Reuse body ids by position so cargo stays in "the first body", "the second body"...
-          const bodies = preset.bodies.map((t, i) => makeBody(t, s.bodies[i]?.id));
-          commit({ bodies, items: rebody(s.items, s.bodies, bodies) });
+          commit(
+            setBodies(s, target.id, (bodies) => preset.bodies.map((t, i) => makeBody(t, bodies[i]?.id))),
+            { activeVehicleId: target.id },
+          );
+        },
+
+        addVehicle(presetId) {
+          const s = get();
+          if (s.vehicles.length >= MAX_VEHICLES) return null;
+          const preset = VEHICLE_PRESETS.find((p) => p.id === presetId) ?? VEHICLE_PRESETS[0];
+          const vehicle: Vehicle = {
+            id: uid('veh'),
+            name: nextVehicleName(s.vehicles),
+            bodies: preset.bodies.map((b) => makeBody(b)),
+          };
+          commit(withVehicles(s, [...s.vehicles, vehicle]), { activeVehicleId: vehicle.id });
+          return vehicle.id;
+        },
+
+        removeVehicle(id) {
+          const s = get();
+          const index = s.vehicles.findIndex((v) => v.id === id);
+          if (index < 0 || s.vehicles.length <= 1) return;
+          const vehicles = s.vehicles.filter((v) => v.id !== id);
+          const active = s.activeVehicleId === id ? vehicles[Math.max(0, index - 1)].id : s.activeVehicleId;
+          commit(withVehicles(s, vehicles, s.dockMode, active), { activeVehicleId: active });
+        },
+
+        renameVehicle(id, name) {
+          const s = get();
+          const clean = name.trim().slice(0, 100);
+          if (!clean) return;
+          const vehicles = s.vehicles.map((v) => (v.id === id && v.name !== clean ? { ...v, name: clean } : v));
+          if (vehicles.every((v, i) => v === s.vehicles[i])) return;
+          commit({ vehicles }, {}, `vehicle-name:${id}`);
+        },
+
+        setDockMode(mode) {
+          const s = get();
+          if (s.dockMode === mode) return;
+          commit(withVehicles(s, s.vehicles, mode));
+        },
+
+        setActiveVehicle(id) {
+          const s = get();
+          if (s.activeVehicleId !== id && s.vehicles.some((v) => v.id === id)) set({ activeVehicleId: id });
         },
 
         setSetting(key, value) {
@@ -403,6 +498,7 @@ export const useStore = create<AppState>()(
           set({
             ...prev,
             selectedId: keepSelection(prev.items, s.selectedId),
+            activeVehicleId: keepActive(prev.vehicles, s.activeVehicleId),
             history: {
               past: s.history.past.slice(0, -1),
               future: [pickPlan(s), ...s.history.future],
@@ -419,6 +515,7 @@ export const useStore = create<AppState>()(
           set({
             ...next,
             selectedId: keepSelection(next.items, s.selectedId),
+            activeVehicleId: keepActive(next.vehicles, s.activeVehicleId),
             history: {
               past: [...s.history.past, pickPlan(s)],
               future: s.history.future.slice(1),
@@ -428,22 +525,29 @@ export const useStore = create<AppState>()(
           });
         },
 
-        loadPlan(plan) {
-          if (!isValidPlan(plan)) throw new Error('Файл не похож на план загрузки');
+        loadPlan(raw) {
+          const plan = parsePlan(raw);
+          if (!plan) throw new Error('Файл не похож на план загрузки');
           const items = settle(plan.items);
           const nextSeq = Math.max(plan.nextSeq || 1, ...items.map((i) => i.seq + 1));
-          commit({ bodies: plan.bodies, items, nextSeq }, { selectedId: null });
+          commit(
+            { vehicles: plan.vehicles, dockMode: plan.dockMode, items, nextSeq },
+            { selectedId: null, activeVehicleId: plan.vehicles[0].id },
+          );
         },
 
-        openPlan(plan) {
-          if (!isValidPlan(plan)) throw new Error('Схема повреждена');
+        openPlan(raw) {
+          const plan = parsePlan(raw);
+          if (!plan) throw new Error('Схема повреждена');
           const items = settle(plan.items);
           set({
-            bodies: plan.bodies,
+            vehicles: plan.vehicles,
+            dockMode: plan.dockMode,
             items,
             nextSeq: Math.max(plan.nextSeq || 1, ...items.map((i) => i.seq + 1)),
             paletteIndex: items.length,
             selectedId: null,
+            activeVehicleId: plan.vehicles[0].id,
             history: { past: [], future: [], lastKey: null, lastAt: 0 },
           });
         },
@@ -468,5 +572,10 @@ export const useStore = create<AppState>()(
 export const LEGACY_PLAN_KEY = 'loader3d:plan';
 
 export function exportPlan(s: AppState): Plan {
-  return { bodies: s.bodies, items: s.items, nextSeq: s.nextSeq };
+  return { vehicles: s.vehicles, dockMode: s.dockMode, items: s.items, nextSeq: s.nextSeq };
+}
+
+/** The active vehicle (always exists: a plan has at least one). */
+export function activeVehicle(s: Pick<AppState, 'vehicles' | 'activeVehicleId'>): Vehicle {
+  return s.vehicles.find((v) => v.id === s.activeVehicleId) ?? s.vehicles[0];
 }

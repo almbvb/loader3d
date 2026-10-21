@@ -1,7 +1,7 @@
 import type { Box, CargoItem } from './types';
 import { boxCenter, contains, intersection, subtractBox, volume } from './geometry';
 import { itemBox, itemWeight } from './item';
-import { bodyAt, type PlacedBody, type VehicleLayout } from './layout';
+import { bodyAt, dockIndexAt, type PlacedBody, type VehicleLayout } from './layout';
 
 /**
  * Weight distribution limits (simplified safety model, also used by autoload):
@@ -31,6 +31,7 @@ export function classify(box: Box, layout: VehicleLayout): Placement {
 
 export interface BodyStats {
   id: string;
+  vehicleId: string;
   name: string;
   /** cm³ of cargo inside the body. */
   used: number;
@@ -54,8 +55,18 @@ export interface BodyStats {
   balanced: boolean;
 }
 
+export interface VehicleStats {
+  id: string;
+  inside: number;
+  overflow: number;
+  /** Cargo on the dock the vehicle is loaded from (a shared dock counts for every vehicle). */
+  dock: number;
+  dockWeight: number;
+}
+
 export interface PlanStats {
   bodies: BodyStats[];
+  vehicles: VehicleStats[];
   inside: number;
   overflow: number;
   dock: number;
@@ -102,6 +113,7 @@ export function computeStats(items: readonly CargoItem[], layout: VehicleLayout)
         pb.body.id,
         {
           id: pb.body.id,
+          vehicleId: pb.vehicleId,
           name: pb.body.name,
           used: 0,
           capacity,
@@ -125,6 +137,8 @@ export function computeStats(items: readonly CargoItem[], layout: VehicleLayout)
   let cargoVolume = 0;
   let cargoWeight = 0;
   let dockWeight = 0;
+  const perVehicle = new Map(layout.vehicles.map((pv) => [pv.vehicle.id, { inside: 0, overflow: 0 }]));
+  const perDock = layout.docks.map(() => ({ count: 0, weight: 0 }));
 
   for (const item of items) {
     const box = itemBox(item);
@@ -135,11 +149,22 @@ export function computeStats(items: readonly CargoItem[], layout: VehicleLayout)
     if (placement.status === 'dock' || !placement.body) {
       dock++;
       dockWeight += weight;
+      const d = perDock[dockIndexAt(box, layout)];
+      if (d) {
+        d.count++;
+        d.weight += weight;
+      }
       continue;
     }
-    if (placement.status === 'inside') inside++;
-    else overflow++;
     const pb = placement.body;
+    const v = perVehicle.get(pb.vehicleId)!;
+    if (placement.status === 'inside') {
+      inside++;
+      v.inside++;
+    } else {
+      overflow++;
+      v.overflow++;
+    }
     const stats = perBody.get(pb.body.id)!;
     stats.count++;
     stats.weight += weight;
@@ -160,5 +185,9 @@ export function computeStats(items: readonly CargoItem[], layout: VehicleLayout)
     s.cogOffset = cog.offset;
     s.balanced = isBalanced(cog.fromFront, cog.offset, pb.box);
   }
-  return { bodies: [...perBody.values()], inside, overflow, dock, cargoVolume, cargoWeight, dockWeight };
+  const vehicles = layout.vehicles.map((pv): VehicleStats => {
+    const d = perDock[layout.dockMode === 'own' ? pv.index : 0] ?? { count: 0, weight: 0 };
+    return { id: pv.vehicle.id, ...perVehicle.get(pv.vehicle.id)!, dock: d.count, dockWeight: d.weight };
+  });
+  return { bodies: [...perBody.values()], vehicles, inside, overflow, dock, cargoVolume, cargoWeight, dockWeight };
 }

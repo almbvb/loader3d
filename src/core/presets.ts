@@ -62,6 +62,8 @@ export const DEFAULT_TRAILER: BodyTemplate = {
 };
 
 export const MAX_BODIES = 3;
+/** Vehicles in one plan. */
+export const MAX_VEHICLES = 10;
 
 export const BODY_LIMITS: Record<keyof Dims, [number, number]> = {
   l: [100, 2500],

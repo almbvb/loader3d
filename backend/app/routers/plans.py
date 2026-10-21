@@ -33,7 +33,8 @@ def _set_name(plan: Plan, name: str) -> None:
 
 def _set_data(plan: Plan, data: PlanData) -> None:
     plan.data = data.model_dump(mode="json")
-    plan.body_count = len(data.bodies)
+    plan.vehicle_count = len(data.vehicles)
+    plan.body_count = data.body_count
     plan.item_count = len(data.items)
 
 
@@ -126,6 +127,7 @@ async def duplicate_plan(plan_id: uuid.UUID, body: PlanDuplicate, auth: CurrentA
     plan = Plan(
         owner_id=auth.user.id,
         data=copy.deepcopy(source.data),
+        vehicle_count=source.vehicle_count,
         body_count=source.body_count,
         item_count=source.item_count,
     )

@@ -17,6 +17,7 @@ const SECTIONS: Array<{ title: string; icon: typeof Hand; rows: Row[]; kbd?: boo
       ['Правая кнопка / колесо', 'Панорама / масштаб'],
       ['Двойной клик по грузу', 'Приблизить камеру к грузу'],
       ['Стрелки на гранях груза', 'Изменить размер (тянуть)'],
+      ['Табличка над кабиной', 'Перейти к этой машине (когда машин несколько)'],
     ],
   },
   {
@@ -34,7 +35,8 @@ const SECTIONS: Array<{ title: string; icon: typeof Hand; rows: Row[]; kbd?: boo
     icon: Keyboard,
     kbd: true,
     rows: [
-      ['R', 'Повернуть на 90°'],
+      ['R', 'Повернуть на 90° вокруг вертикали'],
+      ['X / Y / Z', 'Повернуть вокруг оси X / Y / Z (с включённым «Кантованием»)'],
       ['Del', 'Удалить'],
       ['Ctrl+D', 'Дублировать'],
       ['← ↑ → ↓', 'Сдвиг на 1 см (с Shift — 10 см) относительно камеры'],
@@ -58,7 +60,8 @@ export function HelpDialog() {
           <DialogDescription className="text-pretty">
             Режимы не переключаются: нажали на пустое место — вращаете сцену, нажали на груз — двигаете груз. Грузы не
             висят в воздухе и не пересекаются: при перетаскивании они встают на пол или сверху на другие грузы и
-            притягиваются к граням соседей и стенкам кузова.
+            притягиваются к граням соседей и стенкам кузова. Грузы, которые закрывают обзор, можно сделать прозрачными —
+            кнопка с глазом над сценой; нажатие на прозрачный груз берёт тот, что виден за ним.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-6 md:grid-cols-2">
@@ -70,7 +73,7 @@ export function HelpDialog() {
               <dl className={kbd ? 'grid gap-x-6 gap-y-1.5 sm:grid-cols-2' : 'space-y-1.5'}>
                 {rows.map(([keys, action]) => (
                   <div key={keys} className="flex items-baseline gap-3 text-sm">
-                    <dt className={kbd ? 'w-20 shrink-0' : 'w-44 shrink-0 text-muted-foreground'}>
+                    <dt className={kbd ? 'w-24 shrink-0' : 'w-44 shrink-0 text-muted-foreground'}>
                       {kbd ? <Kbd>{keys}</Kbd> : keys}
                     </dt>
                     <dd>{action}</dd>

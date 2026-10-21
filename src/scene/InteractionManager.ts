@@ -1,4 +1,6 @@
+import type { RotationAxis } from '../core/orientation';
 import type { SceneEngine, PickResult } from './SceneEngine';
+import { SCENE_UI_ATTRIBUTE } from './VehicleView';
 import { MoveTool } from './tools/MoveTool';
 import { ResizeTool } from './tools/ResizeTool';
 import type { PointerInfo, Tool, ToolKind } from './tools/Tool';
@@ -28,6 +30,14 @@ function toInfo(e: PointerEvent): PointerInfo {
     altKey: e.altKey,
     pointerType: e.pointerType,
   };
+}
+
+/** Rotation keys when tilting is allowed (R is always the vertical). */
+const TILT_KEYS: Record<string, RotationAxis> = { KeyX: 'x', KeyY: 'y', KeyZ: 'z' };
+
+/** Buttons drawn over the scene (vehicle name tags) handle their own clicks. */
+function isSceneUi(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(`[${SCENE_UI_ATTRIBUTE}]`) !== null;
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -94,6 +104,7 @@ export class InteractionManager {
     // Clicking the scene finishes editing in the side panel (commits the field on blur).
     const active = document.activeElement;
     if (active instanceof HTMLElement && isTypingTarget(active)) active.blur();
+    if (isSceneUi(e.target)) return;
 
     if (this.pending) {
       // Extra fingers while dragging an item are ignored, not turned into an orbit.
@@ -192,6 +203,10 @@ export class InteractionManager {
 
   private readonly onHover = (e: PointerEvent) => {
     if (e.pointerType !== 'mouse' || this.pending || this.passthrough.size > 0) return;
+    if (isSceneUi(e.target)) {
+      this.onLeave();
+      return;
+    }
     this.hoverPoint = { x: e.clientX, y: e.clientY };
     if (!this.hoverFrame) this.hoverFrame = requestAnimationFrame(this.updateHover);
   };
@@ -252,7 +267,10 @@ export class InteractionManager {
       state.removeItem(id);
     } else if (e.code === 'KeyR' && !mod) {
       e.preventDefault();
-      state.rotateItem(id);
+      state.rotateItem(id, 'y');
+    } else if (TILT_KEYS[e.code] && !mod && !e.altKey && state.settings.allowTilt) {
+      e.preventDefault();
+      state.rotateItem(id, TILT_KEYS[e.code]);
     } else if (e.code === 'KeyD' && mod) {
       e.preventDefault();
       state.duplicateItem(id);

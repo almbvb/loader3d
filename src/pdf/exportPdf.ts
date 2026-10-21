@@ -6,11 +6,12 @@ import { unionBoxes } from '../core/geometry';
 import { itemBox } from '../core/item';
 import { DECK_HEIGHT, computeLayout, vehicleBounds, type PlacedBody, type VehicleLayout } from '../core/layout';
 import { loadingSteps, type LoadDirection } from '../core/loadingOrder';
+import { vehiclePlan } from '../core/plan';
 import { cargoRows, summarizeLoad } from '../core/report';
 import { classify } from '../core/stats';
 import type { Units } from '../core/units';
 import { safeFileName, saveBlob } from '../lib/planFiles';
-import { printWidths, reportDocument, type PdfOrientation, type ReportStep } from './document';
+import { printWidths, reportDocument, type PdfOrientation, type ReportSection, type ReportStep } from './document';
 import { SnapshotRenderer, type Projection, type Shot, type Snapshot } from './snapshot';
 
 export type PdfMode = 'overview' | 'steps';
@@ -28,6 +29,8 @@ export interface PdfOptions {
 export interface PdfSource {
   name: string;
   plan: Plan;
+  /** Vehicles to report on, in this order: one section each. */
+  vehicleIds: string[];
   units: Units;
   highlightOverflow: boolean;
 }
@@ -56,11 +59,14 @@ export async function buildPdf(
   onProgress: (done: number, total: number) => void = () => {},
 ): Promise<Blob> {
   const library = loadPdfMake();
-  const { plan } = source;
-  const layout = computeLayout(plan.bodies);
-  const loaded = plan.items.filter((item) => classify(itemBox(item), layout).status !== 'dock');
-  const steps = options.mode === 'steps' ? loadingSteps(plan.items, layout, options.direction) : [];
-  const total = 2 + steps.length;
+  // Each vehicle on its own, moved to Z = 0: the views and tables below are made for one vehicle.
+  const parts = source.vehicleIds.map((id) => {
+    const plan = vehiclePlan(source.plan, id);
+    const layout = computeLayout(plan.vehicles, plan.dockMode);
+    const steps = options.mode === 'steps' ? loadingSteps(plan.items, layout, options.direction) : [];
+    return { plan, layout, steps };
+  });
+  const total = parts.reduce((sum, p) => sum + 2 + p.steps.length, 0);
   let done = 0;
   const tick = async () => {
     onProgress(++done, total);
@@ -68,6 +74,27 @@ export async function buildPdf(
     await new Promise((resolve) => setTimeout(resolve, 0));
   };
 
+  const sections: ReportSection[] = [];
+  for (const part of parts) sections.push(await section(part, source, options, tick));
+  const single = sections.length === 1 && source.plan.vehicles.length > 1;
+  const doc = reportDocument({
+    title: single ? `${source.name} — ${sections[0].vehicleName}` : source.name,
+    date: new Date(),
+    units: source.units,
+    orientation: options.orientation,
+    sections,
+  });
+  return (await library).createPdf(doc).getBlob();
+}
+
+/** Views, tables and steps of one vehicle. */
+async function section(
+  { plan, layout, steps }: { plan: Plan; layout: VehicleLayout; steps: ReturnType<typeof loadingSteps> },
+  source: PdfSource,
+  options: PdfOptions,
+  tick: () => Promise<void>,
+): Promise<ReportSection> {
+  const loaded = plan.items.filter((item) => classify(itemBox(item), layout).status !== 'dock');
   const print = printWidths(options.orientation);
   const renderer = new SnapshotRenderer(layout, source.highlightOverflow);
   let views: { top: Snapshot; side: Snapshot };
@@ -118,30 +145,26 @@ export async function buildPdf(
     renderer.dispose();
   }
 
-  const doc = reportDocument({
-    title: source.name,
-    date: new Date(),
-    units: source.units,
-    orientation: options.orientation,
-    bodies: plan.bodies,
+  return {
+    vehicleName: plan.vehicles[0].name,
+    bodies: plan.vehicles[0].bodies,
     summary: summarizeLoad(plan.items, layout),
     rows: cargoRows(plan.items, layout),
     views,
     steps: options.mode === 'steps' ? { direction: options.direction, list: stepList } : undefined,
-  });
-  return (await library).createPdf(doc).getBlob();
+  };
 }
 
 /** A step shows its body with wheels, and the cab behind the first one. */
 function stepFrame(layout: VehicleLayout, pb: PlacedBody): Box {
   const halfWidth = Math.max(pb.box.max.z, 125);
-  const front = pb.index === 0 ? vehicleBounds(layout).max.x : pb.box.max.x;
+  const front = pb.index === 0 ? vehicleBounds(layout.vehicles[0]).max.x : pb.box.max.x;
   return { min: { x: pb.box.min.x, y: -DECK_HEIGHT, z: -halfWidth }, max: { x: front, y: pb.box.max.y, z: halfWidth } };
 }
 
 /** The vehicle with its wheels and cab, and any cargo sticking out of it. */
 function overviewBounds(layout: VehicleLayout, items: readonly CargoItem[]): Box {
-  const vb = vehicleBounds(layout);
+  const vb = vehicleBounds(layout.vehicles[0]);
   const halfWidth = Math.max(vb.max.z, 125) + 5; // the cab is a little wider than the bodies
   const vehicle: Box = { min: { x: vb.min.x, y: -DECK_HEIGHT, z: -halfWidth }, max: { ...vb.max, z: halfWidth } };
   return unionBoxes([vehicle, ...items.map(itemBox)])!;

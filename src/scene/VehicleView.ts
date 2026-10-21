@@ -1,10 +1,13 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import type { Box, Rect } from '../core/types';
 import {
   CAB_GAP,
   CAB_LENGTH,
+  CAB_WIDTH,
   DECK_HEIGHT,
   type PlacedBody,
+  type PlacedVehicle,
   type VehicleLayout,
 } from '../core/layout';
 import { formatLength, type Units } from '../core/units';
@@ -15,11 +18,20 @@ import { COLORS } from './theme';
 export interface VehicleViewOptions {
   units: Units;
   showDimensions: boolean;
+  /** Highlighted name tag when there are several vehicles. */
+  activeVehicleId?: string | null;
 }
 
 const WHEEL_RADIUS = 52;
 const UP = new THREE.Vector3(0, 1, 0);
 const PLUS_Z = new THREE.Vector3(0, 0, 1);
+
+/** Marks DOM elements over the scene that handle their own clicks (InteractionManager skips them). */
+export const SCENE_UI_ATTRIBUTE = 'data-scene-ui';
+
+function shiftZ(b: Box, dz: number): Box {
+  return { min: { ...b.min, z: b.min.z + dz }, max: { ...b.max, z: b.max.z + dz } };
+}
 
 function standard(color: string, params: THREE.MeshStandardMaterialParameters = {}) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0, ...params });
@@ -38,12 +50,18 @@ function canvasTexture(width: number, height: number, draw: (ctx: CanvasRenderin
 }
 
 /**
- * Static part of the scene: dock platform, cargo bodies (translucent boxes with a frame),
- * a stylised cab/chassis for orientation and drawing-style overall dimensions.
+ * Static part of the scene: dock platforms, the vehicles side by side (cargo bodies as translucent
+ * boxes with a frame, a stylised cab/chassis for orientation) and drawing-style overall dimensions.
+ * Each vehicle is built around its own centreline in a group moved to its lane.
  */
 export class VehicleView {
   readonly root = new THREE.Group();
+  /** Clicks on a vehicle name tag (only shown when there are several vehicles). */
+  onVehicleClick: ((id: string) => void) | null = null;
   private readonly dimensions = new THREE.Group();
+  private readonly tags = new Map<string, HTMLElement>();
+  /** Where `add()` puts objects: the root, or the group of the vehicle being built. */
+  private parent: THREE.Object3D = this.root;
 
   private readonly frameMaterial = fatMaterial(COLORS.frame, 2);
   private readonly dimMaterial = fatMaterial(COLORS.dims, 1.25);
@@ -115,13 +133,29 @@ export class VehicleView {
 
   build(layout: VehicleLayout, options: VehicleViewOptions): void {
     this.clear();
-    this.buildDock(layout);
-    for (const pb of layout.bodies) this.buildBody(pb);
-    this.buildCouplings(layout);
-    this.buildCab(layout);
+    for (const dock of layout.docks) this.buildDock(dock);
+    for (const pv of layout.vehicles) {
+      const group = new THREE.Group();
+      group.name = `vehicle:${pv.vehicle.id}`;
+      group.position.z = pv.lane;
+      this.root.add(group);
+      this.parent = group;
+      const bodies = pv.bodies.map((pb) => ({ ...pb, box: shiftZ(pb.box, -pv.lane) }));
+      for (const pb of bodies) this.buildBody(pb);
+      this.buildCouplings(bodies);
+      this.buildCab(pv, bodies);
+      if (layout.vehicles.length > 1) this.buildTag(pv, bodies);
+      this.parent = this.root;
+    }
     this.buildDimensions(layout, options.units);
     this.dimensions.visible = options.showDimensions;
     this.root.add(this.dimensions);
+    this.setActive(options.activeVehicleId ?? null);
+  }
+
+  /** Highlights the name tag of the active vehicle. */
+  setActive(vehicleId: string | null): void {
+    for (const [id, tag] of this.tags) tag.classList.toggle('vehicle-tag--active', id === vehicleId);
   }
 
   /** Hides dimension labels that do not fit their (foreshortened) dimension line. */
@@ -144,6 +178,7 @@ export class VehicleView {
   }
 
   private clear(): void {
+    this.tags.clear();
     for (const child of [...this.root.children]) {
       disposeTree(child);
       this.root.remove(child);
@@ -159,7 +194,7 @@ export class VehicleView {
         o.receiveShadow = shadows.receive ?? false;
       }
     });
-    this.root.add(obj);
+    this.parent.add(obj);
     return obj;
   }
 
@@ -192,8 +227,7 @@ export class VehicleView {
     }
   }
 
-  private buildDock(layout: VehicleLayout): void {
-    const d = layout.dock;
+  private buildDock(d: Rect): void {
     const depth = d.maxX - d.minX;
     const width = d.maxZ - d.minZ;
     const cz = (d.minZ + d.maxZ) / 2;
@@ -285,13 +319,31 @@ export class VehicleView {
     const tag = new CSS2DObject(Object.assign(document.createElement('div'), { className: 'body-tag', textContent: body.name }));
     tag.position.set(max.x - 40, H + 6, min.z);
     tag.center.set(1, 1);
-    this.root.add(tag);
+    this.parent.add(tag);
   }
 
-  private buildCouplings(layout: VehicleLayout): void {
-    for (let i = 0; i < layout.bodies.length - 1; i++) {
-      const front = layout.bodies[i].box;
-      const back = layout.bodies[i + 1].box;
+  /** Vehicle name over the cab; a click makes it the active vehicle. */
+  private buildTag(pv: PlacedVehicle, bodies: PlacedBody[]): void {
+    const element = Object.assign(document.createElement('button'), {
+      type: 'button',
+      className: 'vehicle-tag',
+      textContent: pv.vehicle.name,
+      title: 'Перейти к этой машине',
+    });
+    element.setAttribute(SCENE_UI_ATTRIBUTE, '');
+    element.addEventListener('click', () => this.onVehicleClick?.(pv.vehicle.id));
+    const tag = new CSS2DObject(element);
+    const top = Math.max(250, bodies[0]?.box.max.y ?? 0);
+    tag.position.set(pv.front + CAB_GAP + CAB_LENGTH / 2, top + 24, 0);
+    tag.center.set(0.5, 1);
+    this.parent.add(tag);
+    this.tags.set(pv.vehicle.id, element);
+  }
+
+  private buildCouplings(bodies: PlacedBody[]): void {
+    for (let i = 0; i < bodies.length - 1; i++) {
+      const front = bodies[i].box;
+      const back = bodies[i + 1].box;
       const length = front.min.x - back.max.x + 120;
       this.add(this.box([length, 12, 14], this.mats.chassis, [(front.min.x + back.max.x) / 2, -62, 0]), {
         cast: true,
@@ -299,12 +351,12 @@ export class VehicleView {
     }
   }
 
-  private buildCab(layout: VehicleLayout): void {
-    const first = layout.bodies[0];
+  private buildCab(pv: PlacedVehicle, bodies: PlacedBody[]): void {
+    const first = bodies[0];
     if (!first) return;
-    const W = 250;
+    const W = CAB_WIDTH;
     const gap = first.body.kind === 'semi' ? CAB_GAP : 14;
-    const x0 = layout.front + gap;
+    const x0 = pv.front + gap;
     const x1 = x0 + CAB_LENGTH;
     const yBottom = -DECK_HEIGHT + 48;
     const yTop = Math.max(170, Math.min(first.box.max.y - 15, 250));
@@ -340,15 +392,15 @@ export class VehicleView {
     this.add(this.box([14, 34, W + 4], this.mats.trim, [x1 + 6, yBottom + 4, 0]), { cast: true });
 
     // Tractor chassis runs under the semi-trailer (fifth wheel).
-    const chassisStart = first.body.kind === 'semi' ? layout.front - 330 : x0 - 10;
+    const chassisStart = first.body.kind === 'semi' ? pv.front - 330 : x0 - 10;
     this.add(this.box([x1 - chassisStart, 26, 110], this.mats.chassis, [(x1 + chassisStart) / 2, -62, 0]), {
       cast: true,
     });
     const halfTrack = W / 2 - 30;
     this.wheelPair(x1 - 65, halfTrack);
     if (first.body.kind === 'semi') {
-      this.wheelPair(layout.front - 90, halfTrack);
-      this.wheelPair(layout.front - 225, halfTrack);
+      this.wheelPair(pv.front - 90, halfTrack);
+      this.wheelPair(pv.front - 225, halfTrack);
     }
   }
 

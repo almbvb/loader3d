@@ -112,6 +112,7 @@ export function PlanCard({ plan, onRename, onDelete }: PlanCardProps) {
         </span>
         <span className="flex items-center gap-1.5">
           <Truck className="size-3.5" />
+          {plan.vehicleCount > 1 && `${plural(plan.vehicleCount, ['машина', 'машины', 'машин'])} · `}
           {plural(plan.bodyCount, ['кузов', 'кузова', 'кузовов'])}
         </span>
       </div>

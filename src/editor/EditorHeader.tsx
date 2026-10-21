@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Units } from '../core/units';
-import { createDemoPlan, exportPlan, useStore } from '../store/useStore';
+import { createDemoPlan, exportPlan, useStore, type XrayMode } from '../store/useStore';
 import { useUi } from '../store/useUi';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -48,6 +48,7 @@ import { downloadPlan, readPlanFile } from '@/lib/planFiles';
 import { cn } from '@/lib/utils';
 import { useMediaQuery, usePlacements } from './hooks';
 import { flush, renamePlan, usePlanSync } from './planSync';
+import { XRAY_MODES } from './XrayControl';
 
 export function EditorHeader() {
   const navigate = useNavigate();
@@ -229,7 +230,7 @@ const UNITS: Array<{ value: Units; label: string }> = [
   { value: 'm', label: 'Метры' },
 ];
 
-type Toggle = 'showDimensions' | 'showLabels' | 'highlightOverflow' | 'snapping' | 'resizeHandles';
+type Toggle = 'showDimensions' | 'showLabels' | 'highlightOverflow' | 'snapping' | 'resizeHandles' | 'allowTilt';
 
 const keepOpen = (e: Event) => e.preventDefault();
 
@@ -266,9 +267,19 @@ function DisplayItems() {
         ),
       )}
       <DropdownMenuSeparator />
+      <DropdownMenuLabel>Прозрачность грузов</DropdownMenuLabel>
+      <DropdownMenuRadioGroup value={settings.xray} onValueChange={(v) => setSetting('xray', v as XrayMode)}>
+        {XRAY_MODES.map((m) => (
+          <DropdownMenuRadioItem key={m.value} value={m.value} onSelect={keepOpen} title={m.hint}>
+            {m.label}
+          </DropdownMenuRadioItem>
+        ))}
+      </DropdownMenuRadioGroup>
+      <DropdownMenuSeparator />
       <DropdownMenuLabel>Перемещение</DropdownMenuLabel>
       {toggle('snapping', 'Магнитная привязка')}
       {toggle('resizeHandles', 'Ручки изменения размера')}
+      {toggle('allowTilt', 'Кантование (повороты по X, Y, Z)')}
       <DropdownMenuSeparator />
       <DropdownMenuLabel>Единицы</DropdownMenuLabel>
       <DropdownMenuRadioGroup value={settings.units} onValueChange={(v) => setSetting('units', v as Units)}>

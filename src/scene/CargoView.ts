@@ -22,7 +22,15 @@ interface ItemVisual {
   overflowing: boolean;
   geometryKey: string;
   color: string;
+  /** X-ray: shown opacity and the one it is easing towards. */
+  alpha: number;
+  targetAlpha: number;
 }
+
+/** Time constant of the x-ray fade, ms. */
+const FADE_MS = 90;
+/** Items fainter than this are "see-through": picking goes through them. */
+const SEE_THROUGH = 0.75;
 
 const labelTextures = new Map<string, THREE.CanvasTexture>();
 
@@ -53,7 +61,10 @@ function edgeColor(color: string): THREE.Color {
   return new THREE.Color(color).lerp(new THREE.Color('#0b1220'), 0.5);
 }
 
-/** Cargo boxes: one mesh + edges + top-face number per item, plus red overflow volumes. */
+/**
+ * Cargo boxes: one mesh + edges + top-face number per item, plus red overflow volumes.
+ * Any item can be faded out (x-ray) — the fill turns translucent, the outline stays readable.
+ */
 export class CargoView {
   readonly root = new THREE.Group();
   private readonly visuals = new Map<string, ItemVisual>();
@@ -113,6 +124,31 @@ export class CargoView {
     for (const [id, v] of this.visuals) {
       if (!seen.has(id)) this.destroy(id, v);
     }
+  }
+
+  /** X-ray: opacity per item id (missing: opaque). Changes ease in over a few frames, see {@link animate}. */
+  setFade(fade: ReadonlyMap<string, number> | null): void {
+    for (const [id, v] of this.visuals) v.targetAlpha = fade?.get(id) ?? 1;
+  }
+
+  /** Advances the fades by `dt` ms; true while some are still changing. */
+  animate(dt: number): boolean {
+    const k = 1 - Math.exp(-Math.max(0, dt) / FADE_MS);
+    let running = false;
+    for (const v of this.visuals.values()) {
+      if (v.alpha === v.targetAlpha) continue;
+      const next = v.alpha + (v.targetAlpha - v.alpha) * k;
+      v.alpha = Math.abs(next - v.targetAlpha) < 0.01 ? v.targetAlpha : next;
+      this.applyAlpha(v);
+      running ||= v.alpha !== v.targetAlpha;
+    }
+    return running;
+  }
+
+  /** Faded out by the x-ray: what is behind it gets picked. */
+  isSeeThrough(id: string): boolean {
+    const v = this.visuals.get(id);
+    return !!v && v.targetAlpha < SEE_THROUGH;
   }
 
   /** Item meshes for raycasting. */
@@ -185,6 +221,8 @@ export class CargoView {
       overflowing: false,
       geometryKey: '',
       color: item.color,
+      alpha: 1,
+      targetAlpha: 1,
     };
     this.visuals.set(item.id, visual);
     this.pickList = null;
@@ -197,6 +235,23 @@ export class CargoView {
     this.visuals.delete(id);
     this.pickList = null;
     if (this.hoveredId === id) this.hoveredId = null;
+  }
+
+  private applyAlpha(v: ItemVisual): void {
+    const a = v.alpha;
+    const faded = a < 0.995;
+    const fill = v.mesh.material;
+    const edges = v.edges.material;
+    if (fill.transparent !== faded) {
+      fill.transparent = edges.transparent = faded;
+      fill.depthWrite = edges.depthWrite = !faded;
+      fill.needsUpdate = edges.needsUpdate = true;
+      // A ghost casts no shadow on the cargo it lets you see.
+      v.mesh.castShadow = !faded;
+    }
+    fill.opacity = a;
+    edges.opacity = faded ? 0.3 + 0.7 * a : 1;
+    if (v.label) v.label.material.opacity = Math.min(1, a * 1.6);
   }
 
   private applyEdgeColor(v: ItemVisual): void {
@@ -220,6 +275,7 @@ export class CargoView {
       v.label.rotation.x = -Math.PI / 2;
       v.label.userData.sharedGeometry = true;
       v.group.add(v.label);
+      this.applyAlpha(v);
     }
     const text = String(item.seq);
     if (v.labelText !== text) {

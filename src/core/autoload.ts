@@ -1,8 +1,9 @@
 import type { Box, CargoItem, Yaw } from './types';
 import { itemBox, itemSize, itemWeight } from './item';
-import { stagingRegion, type PlacedBody, type VehicleLayout } from './layout';
+import { dockIndexAt, type PlacedBody, type VehicleLayout } from './layout';
+import { floorDims } from './orientation';
 import { settle } from './physics';
-import { findFreeSpot } from './spawn';
+import { dockSpot } from './spawn';
 import { COG_LONG_TOLERANCE, centreOfGravity, classify, isBalanced } from './stats';
 
 /**
@@ -20,7 +21,9 @@ import { COG_LONG_TOLERANCE, centreOfGravity, classify, isBalanced } from './sta
  *    centred.
  * 5. The payload capacity of a body is never exceeded; what does not fit stays on the dock.
  *
- * The result always goes through settle(): no intersections, nothing floating.
+ * Items keep the side they stand on (tilting is the user's call): only the turn about the
+ * vertical is chosen. Several vehicles are filled one after another, each from its own dock or
+ * all from the shared one. The result always goes through settle(): no intersections, nothing floating.
  */
 
 export interface AutoloadOptions {
@@ -28,12 +31,15 @@ export interface AutoloadOptions {
   repackAll?: boolean;
   /** Put cargo on top of other cargo when the floor is full. */
   allowStacking?: boolean;
+  /** Vehicles to load, in this order (default: all). Other vehicles and their docks are left alone. */
+  vehicleIds?: readonly string[];
 }
 
 export type LeftReason = 'too_big' | 'overweight' | 'no_space';
 
 export interface AutoloadBodyResult {
   id: string;
+  vehicleId: string;
   name: string;
   count: number;
   weight: number;
@@ -58,6 +64,8 @@ interface Candidate {
   item: CargoItem;
   weight: number;
   h: number;
+  /** Floor area it takes, cm². */
+  area: number;
 }
 
 /** Footprint in body terms: `x` along the body, `z` across it. */
@@ -105,9 +113,9 @@ interface BodyPlan {
 const EPS = 1e-6;
 
 function footprints(item: CargoItem): Footprint[] {
-  const { l, w } = item.dims;
-  const along: Footprint = { x: l, z: w, yaw: 0 };
-  return l === w ? [along] : [along, { x: w, z: l, yaw: 90 }];
+  const [a, b] = floorDims(item.dims, item.orientation);
+  const along: Footprint = { x: a, z: b, yaw: 0 };
+  return a === b ? [along] : [along, { x: b, z: a, yaw: 90 }];
 }
 
 function fitsBody(c: Candidate, pb: PlacedBody): boolean {
@@ -350,7 +358,7 @@ function sortCandidates(list: Candidate[]): Candidate[] {
   return list.sort(
     (a, b) =>
       b.weight - a.weight ||
-      b.item.dims.l * b.item.dims.w - a.item.dims.l * a.item.dims.w ||
+      b.area - a.area ||
       b.h - a.h ||
       a.item.seq - b.item.seq,
   );
@@ -361,43 +369,78 @@ export function autoload(
   layout: VehicleLayout,
   options: AutoloadOptions = {},
 ): AutoloadResult {
-  const { repackAll = false, allowStacking = true } = options;
-  const candidates: Candidate[] = [];
+  const { repackAll = false, allowStacking = true, vehicleIds } = options;
+  const targets = vehicleIds
+    ? layout.vehicles.filter((pv) => vehicleIds.includes(pv.vehicle.id)).sort(
+        (a, b) => vehicleIds.indexOf(a.vehicle.id) - vehicleIds.indexOf(b.vehicle.id),
+      )
+    : layout.vehicles;
+  const own = layout.dockMode === 'own';
+  // Docks the target vehicles are loaded from.
+  const docks = new Set(targets.map((pv) => (own ? pv.index : 0)));
+  /** Own docks: each vehicle takes only its own cargo; a shared dock is one pool for all of them. */
+  const source = (vehicleId: string) => (own ? vehicleId : '');
+  const candidates = new Map<string, Candidate[]>();
+  const addCandidate = (key: string, c: Candidate) => candidates.set(key, [...(candidates.get(key) ?? []), c]);
   const wasOnDock = new Set<string>();
-  const plans: BodyPlan[] = layout.bodies.map((pb) => ({
-    pb,
-    rows: [],
-    startU: 0,
-    budget: pb.body.maxLoad ?? Infinity,
-    fixed: [],
-    shiftedBack: 0,
-  }));
+  /** Vehicle of the body a repacked item was taken from: it goes back to that vehicle's dock. */
+  const takenFrom = new Map<string, string>();
+  const plans: BodyPlan[] = targets.flatMap((pv) =>
+    pv.bodies.map((pb) => ({
+      pb,
+      rows: [],
+      startU: 0,
+      budget: pb.body.maxLoad ?? Infinity,
+      fixed: [],
+      shiftedBack: 0,
+    })),
+  );
+  const candidate = (item: CargoItem): Candidate => {
+    const [a, b] = floorDims(item.dims, item.orientation);
+    return { item, weight: itemWeight(item), h: itemSize(item).h, area: a * b };
+  };
 
   for (const item of items) {
     const box = itemBox(item);
     const placement = classify(box, layout);
-    if (placement.status === 'dock') wasOnDock.add(item.id);
-    if (placement.status === 'dock' || repackAll) {
-      candidates.push({ item, weight: itemWeight(item), h: itemSize(item).h });
+    if (placement.status === 'dock') {
+      const dock = dockIndexAt(box, layout);
+      if (!docks.has(dock)) continue;
+      wasOnDock.add(item.id);
+      addCandidate(source(layout.vehicles[dock]?.vehicle.id ?? ''), candidate(item));
+      continue;
+    }
+    // Cargo of vehicles that are not loaded now stays where it is.
+    const plan = plans.find((p) => p.pb === placement.body);
+    if (!plan) continue;
+    if (repackAll) {
+      takenFrom.set(item.id, plan.pb.vehicleId);
+      addCandidate(source(plan.pb.vehicleId), candidate(item));
       continue;
     }
     // Cargo that stays: new rows start behind it, its weight counts.
-    const plan = plans.find((p) => p.pb === placement.body)!;
     plan.startU = Math.max(plan.startU, plan.pb.box.max.x - box.min.x);
     plan.budget -= itemWeight(item);
     plan.fixed.push({ box, weight: itemWeight(item) });
   }
 
-  let pool = sortCandidates(candidates);
-  for (const plan of plans) {
-    const used = layFloor(plan, pool);
-    pool = pool.filter((c) => !used.has(c));
-  }
-  if (allowStacking) {
-    for (const plan of plans) {
-      const used = stackOnTop(plan, pool);
-      pool = pool.filter((c) => !used.has(c));
+  const pool: Candidate[] = [];
+  const left: AutoloadResult['left'] = [];
+  for (const [key, list] of candidates) {
+    const group = plans.filter((p) => source(p.pb.vehicleId) === key);
+    let rest = sortCandidates(list);
+    for (const plan of group) {
+      const used = layFloor(plan, rest);
+      rest = rest.filter((c) => !used.has(c));
     }
+    if (allowStacking) {
+      for (const plan of group) {
+        const used = stackOnTop(plan, rest);
+        rest = rest.filter((c) => !used.has(c));
+      }
+    }
+    pool.push(...rest);
+    left.push(...rest.map((c) => ({ id: c.item.id, reason: leftReason(c, group) })));
   }
 
   // Final positions.
@@ -420,18 +463,11 @@ export function autoload(
   }
 
   // Cargo taken out of a body for repacking that found no place goes back to the dock.
-  const left = pool.map((c) => ({ id: c.item.id, reason: leftReason(c, plans) }));
-  const occupied: Box[] = [];
-  for (const item of items) {
-    const next = moved.get(item.id);
-    if (next) occupied.push(itemBox(next));
-    else if (wasOnDock.has(item.id)) occupied.push(itemBox(item));
-  }
-  const region = stagingRegion(layout);
+  const homeless = new Set(pool.filter((c) => !wasOnDock.has(c.item.id)).map((c) => c.item.id));
+  const occupied: Box[] = items.filter((i) => !homeless.has(i.id)).map((i) => itemBox(moved.get(i.id) ?? i));
   for (const c of pool) {
-    if (wasOnDock.has(c.item.id)) continue;
-    const size = itemSize(c.item);
-    const spot = findFreeSpot(size, region, occupied) ?? { x: region.maxX - size.l, z: region.minZ };
+    if (!homeless.has(c.item.id)) continue;
+    const spot = dockSpot(itemSize(c.item), layout, takenFrom.get(c.item.id), occupied);
     const next = { ...c.item, pos: { x: spot.x, y: 0, z: spot.z } };
     moved.set(c.item.id, next);
     occupied.push(itemBox(next));
@@ -464,6 +500,7 @@ function bodyResult(plan: BodyPlan, items: readonly CargoItem[], layout: Vehicle
   const cog = centreOfGravity(entries, plan.pb.box);
   return {
     id: plan.pb.body.id,
+    vehicleId: plan.pb.vehicleId,
     name: plan.pb.body.name,
     count: entries.length,
     weight: entries.reduce((sum, e) => sum + e.weight, 0),

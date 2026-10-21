@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Box, Camera, FileDown, FileText, ListOrdered, RectangleHorizontal, RectangleVertical, Truck } from 'lucide-react';
+import { Box, Camera, Container, FileDown, FileText, ListOrdered, RectangleHorizontal, RectangleVertical, Truck } from 'lucide-react';
 import { toast } from 'sonner';
 import type { LoadDirection } from '../core/loadingOrder';
 import type { PdfMode, PdfOptions } from '../pdf/exportPdf';
@@ -66,6 +66,9 @@ function PdfForm({ busy, setBusy }: { busy: boolean; setBusy(busy: boolean): voi
   const setSaved = useUi((s) => s.setPdfOptions);
   const [fileName, setFileName] = useState(() => usePlanSync.getState().name);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const vehicles = useStore((s) => s.vehicles);
+  /** A vehicle id, or 'all'. */
+  const [scope, setScope] = useState(() => useStore.getState().activeVehicleId);
   const { orientation, mode, direction, projection } = saved;
 
   const submit = async (e: FormEvent) => {
@@ -80,6 +83,7 @@ function PdfForm({ busy, setBusy }: { busy: boolean; setBusy(busy: boolean): voi
         {
           name: usePlanSync.getState().name,
           plan: exportPlan(state),
+          vehicleIds: scope === 'all' ? state.vehicles.map((v) => v.id) : [scope],
           units: state.settings.units,
           highlightOverflow: state.settings.highlightOverflow,
         },
@@ -129,6 +133,25 @@ function PdfForm({ busy, setBusy }: { busy: boolean; setBusy(busy: boolean): voi
             </InputGroupAddon>
           </InputGroup>
         </Field>
+
+        {vehicles.length > 1 && (
+          <Field>
+            {label(Container, 'Машина', 'pdf-vehicle')}
+            <Select value={scope} disabled={busy} onValueChange={setScope}>
+              <SelectTrigger id="pdf-vehicle" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {vehicles.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>
+                    {v.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value="all">Все машины — каждая с новой страницы</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
 
         <Field>
           {label(orientation === 'landscape' ? RectangleHorizontal : RectangleVertical, 'Ориентация', 'pdf-orientation')}

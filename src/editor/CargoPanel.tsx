@@ -12,6 +12,7 @@ import {
   WandSparkles,
 } from 'lucide-react';
 import type { CargoItem, Dims } from '../core/types';
+import { describeOrientation, type RotationAxis } from '../core/orientation';
 import { CARGO_COLORS, CARGO_PRESETS, ITEM_WEIGHT_LIMIT } from '../core/presets';
 import type { Placement } from '../core/stats';
 import { formatDims, formatVolume, formatWeight, type Units } from '../core/units';
@@ -33,6 +34,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
+import { Kbd } from '@/components/ui/kbd';
+import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { plural } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -178,11 +181,14 @@ function AddCargoForm() {
   );
 }
 
-/** Call to action while there is cargo on the dock. */
+/** Call to action while there is cargo on the dock of the active vehicle. */
 function AutoloadCard() {
   const stats = useStats();
+  const activeId = useStore((s) => s.activeVehicleId);
+  const many = useStore((s) => s.vehicles.length > 1);
   const setAutoloadOpen = useUi((s) => s.setAutoloadOpen);
-  if (stats.dock === 0) return null;
+  const dock = stats.vehicles.find((v) => v.id === activeId) ?? { dock: stats.dock, dockWeight: stats.dockWeight };
+  if (dock.dock === 0) return null;
   return (
     <div className="border-b p-3">
       <button
@@ -194,10 +200,10 @@ function AutoloadCard() {
           <WandSparkles className="size-[18px]" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">Загрузить в кузов</span>
+          <span className="block text-sm font-semibold">{many ? 'Загрузить в машину' : 'Загрузить в кузов'}</span>
           <span className="block truncate text-xs text-muted-foreground">
-            На доке {plural(stats.dock, ITEMS)}
-            {stats.dockWeight > 0 && ` · ${formatWeight(stats.dockWeight)}`} — разложим автоматически
+            На доке {plural(dock.dock, ITEMS)}
+            {dock.dockWeight > 0 && ` · ${formatWeight(dock.dockWeight)}`} — разложим автоматически
           </span>
         </span>
         <ChevronRight className="size-4 shrink-0 text-primary transition-transform group-hover/auto:translate-x-0.5" />
@@ -273,15 +279,22 @@ function CargoList() {
   );
 }
 
-function StatusBadge({ placement, multiBody }: { placement?: Placement; multiBody: boolean }) {
+function StatusBadge({ placement }: { placement?: Placement }) {
+  const vehicles = useStore((s) => s.vehicles);
   if (!placement) return null;
   if (placement.status === 'overflow') {
     return <Badge className="shrink-0 bg-destructive/10 text-destructive">За габаритами</Badge>;
   }
-  if (placement.status === 'inside') {
+  if (placement.status === 'inside' && placement.body) {
+    // «В кузове», or which vehicle / which body of a road train.
+    const vehicle = vehicles.find((v) => v.id === placement.body!.vehicleId);
+    const parts: string[] = [];
+    if (vehicles.length > 1 && vehicle) parts.push(vehicle.name);
+    if (vehicle && vehicle.bodies.length > 1) parts.push(placement.body.body.name);
+    const text = parts.join(' · ') || 'В кузове';
     return (
-      <Badge className="max-w-24 shrink-0 truncate bg-success/10 text-success">
-        {multiBody && placement.body ? placement.body.body.name : 'В кузове'}
+      <Badge className="max-w-28 shrink-0 truncate bg-success/10 text-success" title={text}>
+        {text}
       </Badge>
     );
   }
@@ -295,7 +308,6 @@ function StatusBadge({ placement, multiBody }: { placement?: Placement; multiBod
 function CargoRow({ item, placement, selected }: { item: CargoItem; placement?: Placement; selected: boolean }) {
   const select = useStore((s) => s.select);
   const removeItem = useStore((s) => s.removeItem);
-  const multiBody = useStore((s) => s.bodies.length > 1);
   const units = useUnits();
   const ref = useRef<HTMLLIElement>(null);
 
@@ -332,7 +344,7 @@ function CargoRow({ item, placement, selected }: { item: CargoItem; placement?: 
               {item.weight ? ` · ${formatWeight(item.weight)}` : ''}
             </span>
           </span>
-          <StatusBadge placement={placement} multiBody={multiBody} />
+          <StatusBadge placement={placement} />
         </button>
         <Button
           variant="ghost"
@@ -349,9 +361,51 @@ function CargoRow({ item, placement, selected }: { item: CargoItem; placement?: 
   );
 }
 
+const AXES: Array<{ axis: RotationAxis; label: string; hint: string; keys: string }> = [
+  { axis: 'y', label: 'Y', hint: 'Вокруг вертикали (ось Y)', keys: 'R' },
+  { axis: 'x', label: 'X', hint: 'Вокруг оси X — вдоль машины: на бок', keys: 'X' },
+  { axis: 'z', label: 'Z', hint: 'Вокруг оси Z — поперёк машины: на торец', keys: 'Z' },
+];
+
+/** Quarter turns: about the vertical always, about X and Z when tilting is on. */
+function RotateControls({ item }: { item: CargoItem }) {
+  const rotateItem = useStore((s) => s.rotateItem);
+  const allowTilt = useStore((s) => s.settings.allowTilt);
+  const setSetting = useStore((s) => s.setSetting);
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      <span className="text-xs font-medium text-muted-foreground">Поворот 90°</span>
+      <div className="flex gap-1">
+        {AXES.filter((a) => allowTilt || a.axis === 'y').map((a) => (
+          <Tooltip key={a.axis}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="px-2 tabular-nums"
+                aria-label={`Повернуть: ${a.hint}`}
+                onClick={() => rotateItem(item.id, a.axis)}
+              >
+                <RotateCw />
+                {allowTilt ? a.label : 'Повернуть'}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="flex items-center gap-2">
+              {a.hint} <Kbd>{a.keys}</Kbd>
+            </TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
+      <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground" title="Повороты вокруг осей X и Z: класть груз на бок и ставить на торец">
+        <Switch size="sm" checked={allowTilt} onCheckedChange={(v) => setSetting('allowTilt', v)} />
+        Кантовать
+      </label>
+    </div>
+  );
+}
+
 function ItemInspector({ item, units }: { item: CargoItem; units: Units }) {
   const updateItem = useStore((s) => s.updateItem);
-  const rotateItem = useStore((s) => s.rotateItem);
   const duplicateItem = useStore((s) => s.duplicateItem);
   const removeItem = useStore((s) => s.removeItem);
   const [name, setName] = useState(item.name);
@@ -364,7 +418,6 @@ function ItemInspector({ item, units }: { item: CargoItem; units: Units }) {
   const setDim = (key: keyof Dims) => (v: number) => updateItem(item.id, { dims: { ...item.dims, [key]: v } });
 
   const actions = [
-    { icon: RotateCw, label: 'Повернуть на 90°', keys: 'R', run: () => rotateItem(item.id) },
     { icon: Copy, label: 'Дублировать', keys: 'Ctrl+D', run: () => duplicateItem(item.id) },
     { icon: Crosshair, label: 'Показать на сцене', keys: 'F', run: () => getEngine()?.focusItem(item.id) },
   ];
@@ -392,10 +445,10 @@ function ItemInspector({ item, units }: { item: CargoItem; units: Units }) {
       <div className="grid grid-cols-3 items-end gap-2">
         <WeightField label="Вес" kg={item.weight} max={ITEM_WEIGHT_LIMIT} onCommit={(kg) => updateItem(item.id, { weight: kg })} />
         <p className="col-span-2 pb-2 text-xs text-muted-foreground">
-          {item.orientation.yaw === 90 ? 'Повёрнут на 90°' : 'Исходная ориентация'} ·{' '}
-          {formatVolume(item.dims.l * item.dims.w * item.dims.h)}
+          {describeOrientation(item.orientation)} · {formatVolume(item.dims.l * item.dims.w * item.dims.h)}
         </p>
       </div>
+      <RotateControls item={item} />
       <div className="flex items-center gap-1">
         <div className="mr-auto flex flex-wrap gap-1.5" role="radiogroup" aria-label="Цвет">
           {CARGO_COLORS.map((c) => (

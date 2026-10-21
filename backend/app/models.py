@@ -106,6 +106,7 @@ class Plan(Base):
     name_key: Mapped[str] = mapped_column(String(200))
     data: Mapped[dict[str, Any]]
     # Denormalized from `data` so the list does not load every plan body.
+    vehicle_count: Mapped[int] = mapped_column(server_default="1")
     body_count: Mapped[int]
     item_count: Mapped[int]
     # Optimistic locking: bumped by SQLAlchemy on every UPDATE, clients send the version they edited.

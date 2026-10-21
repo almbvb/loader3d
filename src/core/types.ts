@@ -35,12 +35,18 @@ export interface Rect {
 /** Rotation about the vertical axis in degrees. */
 export type Yaw = 0 | 90;
 
+/** Which own dimension points up: `h` — standing as entered, `l` — on its end, `w` — on its side. */
+export type UpAxis = 'h' | 'l' | 'w';
+
 /**
- * Orientation of a cargo item. Only quarter turns about the vertical axis are supported now;
- * tilting (six axis-aligned orientations) or free yaw extend this type and `core/orientation.ts`.
+ * Orientation of a cargo item: one of the six axis-aligned ones (quarter turns about any axis).
+ * `up` picks the dimension that points up, `yaw` turns the item about the vertical; see
+ * `core/orientation.ts`. Free angles would need oriented boxes in `geometry.ts`/`physics.ts`.
  */
 export interface Orientation {
   yaw: Yaw;
+  /** Missing: `h` (upright). Plans made before tilting never have it. */
+  up?: UpAxis;
 }
 
 export interface CargoItem {
@@ -71,8 +77,20 @@ export interface CargoBody {
   maxLoad?: number;
 }
 
-export interface Plan {
+/** A truck or a road train: up to MAX_BODIES cargo bodies, index 0 right behind the cab. */
+export interface Vehicle {
+  id: string;
+  name: string;
   bodies: CargoBody[];
+}
+
+/** One staging platform along the rear doors of all vehicles, or a separate one behind each. */
+export type DockMode = 'shared' | 'own';
+
+export interface Plan {
+  /** Parked side by side at the dock (along Z), the first one on Z = 0. */
+  vehicles: Vehicle[];
+  dockMode: DockMode;
   items: CargoItem[];
   nextSeq: number;
 }

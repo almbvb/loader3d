@@ -62,7 +62,7 @@ export function startSync(record: PlanRecord): void {
   });
   unsubscribe = useStore.subscribe((s, prev) => {
     if (applyingRemote) return;
-    if (s.bodies !== prev.bodies || s.items !== prev.items || s.nextSeq !== prev.nextSeq) {
+    if (s.vehicles !== prev.vehicles || s.dockMode !== prev.dockMode || s.items !== prev.items || s.nextSeq !== prev.nextSeq) {
       dataDirty = true;
       markPending(SAVE_DELAY);
     }

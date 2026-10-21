@@ -17,6 +17,7 @@ class PlanSummary(ApiModel):
     id: uuid.UUID
     name: str
     version: int
+    vehicle_count: int
     body_count: int
     item_count: int
     created_at: datetime

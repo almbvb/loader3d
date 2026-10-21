@@ -9,15 +9,22 @@ from tests.conftest import ClientFactory, error_code, register
 def plan_data(item_count: int = 2) -> dict[str, Any]:
     """A plan exactly as the frontend exports it (exportPlan in src/store/useStore.ts)."""
     return {
-        "bodies": [
+        "vehicles": [
             {
-                "id": "body-1a2b3c4d",
-                "kind": "semi",
-                "name": "Полуприцеп",
-                "dims": {"l": 1360, "w": 245, "h": 270},
-                "maxLoad": 20000,
+                "id": "veh-1a2b3c4d",
+                "name": "Машина 1",
+                "bodies": [
+                    {
+                        "id": "body-1a2b3c4d",
+                        "kind": "semi",
+                        "name": "Полуприцеп",
+                        "dims": {"l": 1360, "w": 245, "h": 270},
+                        "maxLoad": 20000,
+                    }
+                ],
             }
         ],
+        "dockMode": "shared",
         "items": [
             {
                 "id": f"cargo-{n}",
@@ -52,8 +59,9 @@ async def test_create_empty_plan_with_default_vehicle(anna):
     plan = response.json()
     assert plan["name"] == "Рейс Москва — Казань"
     assert plan["version"] == 1
-    assert (plan["bodyCount"], plan["itemCount"]) == (1, 0)
-    assert plan["data"]["bodies"][0]["dims"] == {"l": 1360, "w": 245, "h": 270}
+    assert (plan["vehicleCount"], plan["bodyCount"], plan["itemCount"]) == (1, 1, 0)
+    assert plan["data"]["vehicles"][0]["bodies"][0]["dims"] == {"l": 1360, "w": 245, "h": 270}
+    assert plan["data"]["dockMode"] == "shared"
     assert plan["data"]["items"] == []
     assert plan["data"]["nextSeq"] == 1
 
@@ -71,16 +79,45 @@ async def test_plan_data_round_trips(anna):
 async def test_weight_and_payload_are_optional(anna):
     """Plans made before weights existed have neither field; they must come back without nulls."""
     data = plan_data(2)
-    del data["bodies"][0]["maxLoad"]
+    del data["vehicles"][0]["bodies"][0]["maxLoad"]
     for item in data["items"]:
         del item["weight"]
     created = (await anna.post("/api/plans", json={"name": "Старый план", "data": data})).json()
     assert created["data"] == data
-    assert "maxLoad" not in created["data"]["bodies"][0]
+    assert "maxLoad" not in created["data"]["vehicles"][0]["bodies"][0]
     assert all("weight" not in item for item in created["data"]["items"])
 
     default = (await anna.post("/api/plans", json={"name": "Новый"})).json()
-    assert default["data"]["bodies"][0]["maxLoad"] == 20000
+    assert default["data"]["vehicles"][0]["bodies"][0]["maxLoad"] == 20000
+
+
+async def test_plans_from_before_vehicles_are_read_as_one_vehicle(anna):
+    """Plans saved with `bodies` (one vehicle, no dock mode) come back in the current format."""
+    data = plan_data(2)
+    old = {"bodies": data["vehicles"][0]["bodies"], "items": data["items"], "nextSeq": data["nextSeq"]}
+    created = (await anna.post("/api/plans", json={"name": "Старый формат", "data": old})).json()
+    assert created["data"]["vehicles"] == [{"id": "veh-1", "name": "Машина 1", "bodies": old["bodies"]}]
+    assert created["data"]["dockMode"] == "shared"
+    assert "bodies" not in created["data"]
+    assert (created["vehicleCount"], created["bodyCount"]) == (1, 1)
+
+
+async def test_several_vehicles_and_tilted_cargo(anna):
+    data = plan_data(2)
+    second = copy.deepcopy(data["vehicles"][0])
+    second.update(id="veh-2", name="Машина 2")
+    second["bodies"][0]["id"] = "body-2"
+    second["bodies"].append({**second["bodies"][0], "id": "body-3", "kind": "trailer", "name": "Прицеп"})
+    data["vehicles"].append(second)
+    data["dockMode"] = "own"
+    data["items"][0]["orientation"] = {"yaw": 90, "up": "w"}
+    created = (await anna.post("/api/plans", json={"name": "Две машины", "data": data})).json()
+    assert created["data"] == data
+    assert (created["vehicleCount"], created["bodyCount"]) == (2, 3)
+    listed = (await anna.get("/api/plans")).json()["items"][0]
+    assert (listed["vehicleCount"], listed["bodyCount"]) == (2, 3)
+    copied = (await anna.post(f"/api/plans/{created['id']}/duplicate", json={})).json()
+    assert copied["vehicleCount"] == 2
 
 
 async def test_next_seq_is_never_behind_the_items(anna):
@@ -185,18 +222,35 @@ def _broken(change) -> dict[str, Any]:
     [
         pytest.param(_broken(lambda d: d["items"][0]["orientation"].update(yaw=45)), id="yaw"),
         pytest.param(_broken(lambda d: d["items"][1].update(id="cargo-1")), id="duplicate-item-id"),
-        pytest.param(_broken(lambda d: d.update(bodies=d["bodies"] * 4)), id="too-many-bodies"),
-        pytest.param(_broken(lambda d: d.update(bodies=[])), id="no-bodies"),
+        pytest.param(
+            _broken(lambda d: d["vehicles"][0].update(bodies=d["vehicles"][0]["bodies"] * 4)),
+            id="too-many-bodies",
+        ),
+        pytest.param(_broken(lambda d: d["vehicles"][0].update(bodies=[])), id="no-bodies"),
+        pytest.param(_broken(lambda d: d.update(vehicles=[])), id="no-vehicles"),
+        pytest.param(_broken(lambda d: d.update(vehicles=d["vehicles"] * 11)), id="too-many-vehicles"),
+        pytest.param(_broken(lambda d: d.update(vehicles=d["vehicles"] * 2)), id="duplicate-vehicle-id"),
+        pytest.param(
+            _broken(lambda d: d["vehicles"].append({**d["vehicles"][0], "id": "veh-2"})),
+            id="duplicate-body-id",
+        ),
+        pytest.param(_broken(lambda d: d["vehicles"][0].update(name="")), id="vehicle-without-name"),
+        pytest.param(_broken(lambda d: d.update(dockMode="roof")), id="dock-mode"),
+        pytest.param(_broken(lambda d: d["items"][0]["orientation"].update(up="x")), id="tilt"),
         pytest.param(_broken(lambda d: d["items"][0]["dims"].update(l=1)), id="item-too-small"),
-        pytest.param(_broken(lambda d: d["bodies"][0]["dims"].update(w=900)), id="body-too-wide"),
-        pytest.param(_broken(lambda d: d["bodies"][0].update(kind="ship")), id="body-kind"),
+        pytest.param(
+            _broken(lambda d: d["vehicles"][0]["bodies"][0]["dims"].update(w=900)), id="body-too-wide"
+        ),
+        pytest.param(_broken(lambda d: d["vehicles"][0]["bodies"][0].update(kind="ship")), id="body-kind"),
         pytest.param(_broken(lambda d: d["items"][0]["pos"].update(y=-10)), id="below-floor"),
         pytest.param(_broken(lambda d: d["items"][0].update(color="red")), id="color"),
         pytest.param(_broken(lambda d: d["items"][0].update(fragile=True)), id="unknown-field"),
         pytest.param(_broken(lambda d: d.pop("nextSeq")), id="missing-next-seq"),
         pytest.param(_broken(lambda d: d["items"][0].update(weight=-1)), id="negative-weight"),
         pytest.param(_broken(lambda d: d["items"][0].update(weight=31_000)), id="item-too-heavy"),
-        pytest.param(_broken(lambda d: d["bodies"][0].update(maxLoad=70_000)), id="payload-too-big"),
+        pytest.param(
+            _broken(lambda d: d["vehicles"][0]["bodies"][0].update(maxLoad=70_000)), id="payload-too-big"
+        ),
     ],
 )
 async def test_invalid_plan_data_is_rejected(anna, data):

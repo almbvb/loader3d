@@ -10,8 +10,9 @@ import { Button } from '@/components/ui/button';
 import { Kbd } from '@/components/ui/kbd';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { useStats } from './hooks';
+import { useActiveVehicle, useStats } from './hooks';
 import { VehiclePanel } from './VehiclePanel';
+import { XrayControl } from './XrayControl';
 
 const HINT_KEY = 'loader3d:hint-dismissed';
 
@@ -99,6 +100,7 @@ function ViewToolbar() {
         </Tooltip>
       ))}
       <span className="mx-0.5 h-5 w-px bg-border" />
+      <XrayControl />
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon-sm" onClick={() => getEngine()?.fitAll()} aria-label="Показать всё">
@@ -166,10 +168,17 @@ function Hint() {
   );
 }
 
-/** Fill level, weight and balance per body; counts of cargo inside / on the dock / sticking out. */
+/**
+ * Fill level, weight and balance per body of the active vehicle; counts of its cargo inside / on
+ * its dock / sticking out.
+ */
 function StatsBar() {
   const stats = useStats();
   const total = useStore((s) => s.items.length);
+  const many = useStore((s) => s.vehicles.length > 1);
+  const vehicle = useActiveVehicle();
+  const counts = stats.vehicles.find((v) => v.id === vehicle.id) ?? stats;
+  const bodies = stats.bodies.filter((b) => b.vehicleId === vehicle.id);
 
   return (
     <div
@@ -178,16 +187,16 @@ function StatsBar() {
         'flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2 sm:gap-x-6 sm:gap-y-3 sm:px-4 sm:py-3',
       )}
     >
-      {stats.bodies.map((b) => (
-        <BodyStat key={b.id} b={b} />
+      {bodies.map((b) => (
+        <BodyStat key={b.id} b={b} vehicleName={many && b === bodies[0] ? vehicle.name : undefined} />
       ))}
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <Stat tone="ok" label="В кузове" value={String(stats.inside)} />
+        <Stat tone="ok" label={many ? 'В машине' : 'В кузове'} value={String(counts.inside)} />
         <Stat
           label="На доке"
-          value={stats.dockWeight > 0 ? `${stats.dock} · ${formatWeight(stats.dockWeight)}` : String(stats.dock)}
+          value={counts.dockWeight > 0 ? `${counts.dock} · ${formatWeight(counts.dockWeight)}` : String(counts.dock)}
         />
-        {stats.overflow > 0 && <Stat tone="danger" label="За габаритами" value={String(stats.overflow)} />}
+        {counts.overflow > 0 && <Stat tone="danger" label="За габаритами" value={String(counts.overflow)} />}
         <span className="ml-1 hidden text-muted-foreground tabular-nums sm:inline">
           всего {total} · {formatVolume(stats.cargoVolume)}
           {stats.cargoWeight > 0 && ` · ${formatWeight(stats.cargoWeight)}`}
@@ -197,11 +206,14 @@ function StatsBar() {
   );
 }
 
-function BodyStat({ b }: { b: BodyStats }) {
+function BodyStat({ b, vehicleName }: { b: BodyStats; vehicleName?: string }) {
   return (
     <div className="min-w-[130px] flex-1 sm:min-w-[200px]">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-xs font-medium text-muted-foreground">{b.name}</span>
+        <span className="truncate text-xs font-medium text-muted-foreground">
+          {vehicleName && <span className="text-foreground">{vehicleName} · </span>}
+          {b.name}
+        </span>
         <span className="text-sm font-semibold tabular-nums">{formatPercent(b.fill)}</span>
       </div>
       <div

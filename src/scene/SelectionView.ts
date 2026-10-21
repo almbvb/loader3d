@@ -3,6 +3,7 @@ import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { Box, CargoItem } from '../core/types';
 import { boxCenter, boxSize } from '../core/geometry';
 import { itemBox } from '../core/item';
+import { DIM_LETTER, axisMap } from '../core/orientation';
 import { FACES, faceAxis, faceSign, type Face } from '../core/resize';
 import { formatLength, type Units } from '../core/units';
 import { DimensionLine } from './DimensionLine';
@@ -190,9 +191,9 @@ export class SelectionView {
     const s = boxSize(box);
     const off = 22;
     // Name the sides after the item's own dimensions, so they match the inspector after rotation.
-    const turned = item.orientation.yaw === 90;
-    const xName = turned ? 'Ш' : 'Д';
-    const zName = turned ? 'Д' : 'Ш';
+    const axes = axisMap(item.orientation);
+    const xName = DIM_LETTER[axes.x];
+    const zName = DIM_LETTER[axes.z];
     this.dims[0].update({
       a: new THREE.Vector3(min.x, min.y, max.z),
       b: new THREE.Vector3(max.x, min.y, max.z),
@@ -212,7 +213,7 @@ export class SelectionView {
       b: new THREE.Vector3(min.x, max.y, max.z),
       dir: PLUS_Z,
       offset: off,
-      text: `В ${formatLength(s.h, units)}`,
+      text: `${DIM_LETTER[axes.y]} ${formatLength(s.h, units)}`,
     });
     const own = item.dims;
     this.summary.position.set((min.x + max.x) / 2, max.y, (min.z + max.z) / 2);

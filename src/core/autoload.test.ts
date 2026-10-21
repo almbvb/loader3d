@@ -3,7 +3,8 @@ import type { CargoBody, CargoItem, Dims } from './types';
 import { autoload } from './autoload';
 import { itemBox } from './item';
 import { computeLayout, stagingRegion } from './layout';
-import { findCollisions, findFloating } from './physics';
+import { layoutOf, vehicle } from './testing';
+import { findCollisions, findFloating, settle } from './physics';
 import { findFreeSpot } from './spawn';
 import { COG_LAT_TOLERANCE, COG_LONG_TOLERANCE, classify, computeStats } from './stats';
 
@@ -46,7 +47,7 @@ const PALLET = { l: 120, w: 80, h: 150 };
 
 describe('autoload', () => {
   it('loads a full trailer of euro pallets without overlaps', () => {
-    const layout = computeLayout([body()]);
+    const layout = layoutOf([body()]);
     const items = onDock(layout, [], 33, PALLET, 400);
     const result = autoload(items, layout);
     expectSound(result.items);
@@ -58,7 +59,7 @@ describe('autoload', () => {
   });
 
   it('never exceeds the payload capacity', () => {
-    const layout = computeLayout([body(1360, 245, 270, 5000)]);
+    const layout = layoutOf([body(1360, 245, 270, 5000)]);
     const items = onDock(layout, [], 8, PALLET, 1000);
     const result = autoload(items, layout);
     expectSound(result.items);
@@ -69,7 +70,7 @@ describe('autoload', () => {
   });
 
   it('stacks only when the floor is full, lighter on heavier and fully supported', () => {
-    const layout = computeLayout([body(360, 245, 270)]);
+    const layout = layoutOf([body(360, 245, 270)]);
     // Floor: 3 rows × 3 pallets = 9 places and no room left; 4 light boxes must go on top.
     let items = onDock(layout, [], 9, PALLET, 500);
     items = onDock(layout, items, 4, { l: 60, w: 40, h: 40 }, 20);
@@ -95,15 +96,15 @@ describe('autoload', () => {
 
   it('picks the pallet turn that fits more of them', () => {
     // 3.6 m: 3 rows of 3 lengthwise pallets (9) beat 4 rows of 2 crosswise ones (8).
-    const short = computeLayout([body(360, 245, 270)]);
+    const short = layoutOf([body(360, 245, 270)]);
     expect(autoload(onDock(short, [], 9, PALLET, 400), short).loaded).toHaveLength(9);
     // 13.6 m: 17 rows of 2 crosswise pallets (34) beat 11 rows of 3 (33).
-    const long = computeLayout([body()]);
+    const long = layoutOf([body()]);
     expect(autoload(onDock(long, [], 34, PALLET, 400), long).loaded).toHaveLength(34);
   });
 
   it('keeps everything on the floor when there is room', () => {
-    const layout = computeLayout([body()]);
+    const layout = layoutOf([body()]);
     let items = onDock(layout, [], 6, PALLET, 500);
     items = onDock(layout, items, 6, { l: 60, w: 40, h: 40 }, 20);
     const result = autoload(items, layout);
@@ -111,7 +112,7 @@ describe('autoload', () => {
   });
 
   it('can be told not to stack at all', () => {
-    const layout = computeLayout([body(360, 245, 270)]);
+    const layout = layoutOf([body(360, 245, 270)]);
     let items = onDock(layout, [], 9, PALLET, 500);
     items = onDock(layout, items, 2, { l: 60, w: 40, h: 40 }, 20);
     const result = autoload(items, layout, { allowStacking: false });
@@ -120,7 +121,7 @@ describe('autoload', () => {
   });
 
   it('balances a partial heavy load along and across the body', () => {
-    const layout = computeLayout([body(1360, 245, 270, 20000)]);
+    const layout = layoutOf([body(1360, 245, 270, 20000)]);
     let items = onDock(layout, [], 5, { l: 120, w: 100, h: 116 }, 1000);
     items = onDock(layout, items, 4, PALLET, 300);
     const result = autoload(items, layout);
@@ -132,7 +133,7 @@ describe('autoload', () => {
   });
 
   it('leaves cargo already in the body where it is and loads behind it', () => {
-    const layout = computeLayout([body()]);
+    const layout = layoutOf([body()]);
     const front = layout.bodies[0].box;
     const fixed: CargoItem = {
       id: 'fixed',
@@ -154,7 +155,7 @@ describe('autoload', () => {
   });
 
   it('repacks cargo already in the bodies when asked, and returns what does not fit to the dock', () => {
-    const layout = computeLayout([body(300, 245, 270)]);
+    const layout = layoutOf([body(300, 245, 270)]);
     const box = layout.bodies[0].box;
     const inside: CargoItem[] = [0, 1].map((i) => ({
       id: `in${i}`,
@@ -182,7 +183,7 @@ describe('autoload', () => {
   });
 
   it('handles hundreds of boxes quickly and soundly', () => {
-    const layout = computeLayout([body()]);
+    const layout = layoutOf([body()]);
     const items = onDock(layout, [], 300, { l: 60, w: 40, h: 40 }, 20);
     const started = performance.now();
     const result = autoload(items, layout);
@@ -192,7 +193,7 @@ describe('autoload', () => {
   });
 
   it('works with cargo that has no weight (plans made before weights)', () => {
-    const layout = computeLayout([body(400, 245, 270)]);
+    const layout = layoutOf([body(400, 245, 270)]);
     const items = onDock(layout, [], 12, PALLET);
     const result = autoload(items, layout);
     expectSound(result.items);
@@ -201,7 +202,7 @@ describe('autoload', () => {
   });
 
   it('reports cargo that is bigger than any body', () => {
-    const layout = computeLayout([body(400, 245, 270)]);
+    const layout = layoutOf([body(400, 245, 270)]);
     const items = onDock(layout, [], 1, { l: 500, w: 100, h: 100 }, 10);
     const result = autoload(items, layout);
     expect(result.left).toEqual([{ id: items[0].id, reason: 'too_big' }]);
@@ -209,7 +210,7 @@ describe('autoload', () => {
   });
 
   it('fills the next body of a road train', () => {
-    const layout = computeLayout([body(770, 245, 300, 10000, 'truck'), body(820, 245, 300, 10000, 'trailer')]);
+    const layout = layoutOf([body(770, 245, 300, 10000, 'truck'), body(820, 245, 300, 10000, 'trailer')]);
     const items = onDock(layout, [], 24, PALLET, 700);
     const result = autoload(items, layout);
     expectSound(result.items);
@@ -219,5 +220,70 @@ describe('autoload', () => {
     expect(truck.count + trailer.count).toBe(result.loaded.length);
     expect(result.loaded.length).toBe(24 - result.left.length);
     expect(trailer.count).toBeGreaterThan(0);
+  });
+});
+
+describe('autoload with several vehicles', () => {
+  const two = (mode: 'shared' | 'own') =>
+    computeLayout([vehicle([body(1360, 245, 270, 20000, 'a1')], 'A'), vehicle([body(1360, 245, 270, 20000, 'b1')], 'B')], mode);
+
+  /** Pallets on the dock of a vehicle. */
+  function dockOf(layout: ReturnType<typeof computeLayout>, vehicleId: string, existing: CargoItem[], count: number): CargoItem[] {
+    const out = [...existing];
+    for (let i = 0; i < count; i++) {
+      const id = `m${++n}`;
+      const spot = findFreeSpot(PALLET, stagingRegion(layout, vehicleId), out.map(itemBox), 5)!;
+      out.push({ id, seq: n, name: id, dims: PALLET, orientation: { yaw: 0 }, pos: { x: spot.x, y: 0, z: spot.z }, color: '#000', weight: 300 });
+    }
+    return out;
+  }
+
+  it('loads only the chosen vehicle from a shared dock', () => {
+    const layout = two('shared');
+    const items = dockOf(layout, 'A', [], 6);
+    const result = autoload(items, layout, { vehicleIds: ['B'] });
+    expectSound(result.items);
+    expect(result.bodies.map((b) => b.vehicleId)).toEqual(['B']);
+    expect(result.loaded).toHaveLength(6);
+    for (const item of result.items) expect(classify(itemBox(item), layout).body?.vehicleId).toBe('B');
+  });
+
+  it('loads every vehicle from its own dock', () => {
+    const layout = two('own');
+    const items = dockOf(layout, 'B', dockOf(layout, 'A', [], 4), 3);
+    const result = autoload(items, layout);
+    expectSound(result.items);
+    const stats = computeStats(result.items, layout);
+    expect(stats.vehicles.map((v) => v.inside)).toEqual([4, 3]);
+
+    const onlyA = autoload(items, layout, { vehicleIds: ['A'] });
+    expect(onlyA.loaded).toHaveLength(4);
+    expect(computeStats(onlyA.items, layout).vehicles.map((v) => [v.inside, v.dock])).toEqual([
+      [4, 0],
+      [0, 3],
+    ]);
+  });
+
+  it('leaves the cargo of other vehicles alone when repacking', () => {
+    const layout = two('shared');
+    const loaded = autoload(dockOf(layout, 'A', [], 8), layout).items;
+    const inA = loaded.filter((i) => classify(itemBox(i), layout).body?.vehicleId === 'A');
+    const result = autoload(loaded, layout, { vehicleIds: ['B'], repackAll: true });
+    for (const item of inA) expect(result.items.find((i) => i.id === item.id)).toBe(item);
+  });
+
+  it('keeps tilted cargo on the side it was put on', () => {
+    const layout = layoutOf([body()]);
+    const items = onDock(layout, [], 4, { l: 200, w: 60, h: 40 }, 50).map((i) => ({
+      ...i,
+      orientation: { yaw: 0 as const, up: 'l' as const },
+    }));
+    const result = autoload(settle(items), layout);
+    expectSound(result.items);
+    expect(result.loaded).toHaveLength(4);
+    for (const item of result.items) {
+      expect(item.orientation.up).toBe('l');
+      expect(itemBox(item).max.y - itemBox(item).min.y).toBe(200);
+    }
   });
 });

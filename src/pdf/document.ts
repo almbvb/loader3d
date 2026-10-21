@@ -16,17 +16,26 @@ export interface ReportStep {
   items: CargoItem[];
 }
 
-export interface ReportData {
-  title: string;
-  date: Date;
-  units: Units;
-  orientation: PdfOrientation;
+/** Everything the report says about one vehicle. */
+export interface ReportSection {
+  vehicleName: string;
   bodies: CargoBody[];
   summary: LoadSummary;
   rows: CargoRow[];
   views: { top: Snapshot; side: Snapshot };
   steps?: { direction: LoadDirection; list: ReportStep[] };
 }
+
+export interface ReportData {
+  title: string;
+  date: Date;
+  units: Units;
+  orientation: PdfOrientation;
+  /** One per vehicle; several start each on a new page under the vehicle's name. */
+  sections: ReportSection[];
+}
+
+type SectionData = ReportSection & Pick<ReportData, 'units' | 'orientation'>;
 
 const TEXT = '#1f2937';
 const MUTED = '#667185';
@@ -43,6 +52,9 @@ const MARGIN_BOTTOM = 46;
 const A4 = { width: 595.28, height: 841.89 };
 
 const ITEMS = ['груз', 'груза', 'грузов'] as const;
+const VEHICLES = ['машина', 'машины', 'машин'] as const;
+/** Height taken by a vehicle heading above the views, pt. */
+const SECTION_TITLE = 30;
 
 export const DIRECTION_TEXT: Record<LoadDirection, string> = {
   rear: 'сзади',
@@ -92,21 +104,36 @@ export function reportDocument(data: ReportData): TDocumentDefinitions {
   const contentWidth = page.width - MARGIN_X * 2;
   const contentHeight = page.height - MARGIN_TOP - MARGIN_BOTTOM;
   const date = new Intl.DateTimeFormat('ru-RU').format(data.date);
-  const vehicle = vehicleSummary(data.bodies);
+  const many = data.sections.length > 1;
+  const vehicle = many
+    ? `${plural(data.sections.length, VEHICLES)}: ${data.sections.map((s) => s.vehicleName).join(', ')}`
+    : vehicleSummary(data.sections[0]?.bodies ?? []);
 
-  const content: Content[] = [
-    overview(data, contentWidth, contentHeight),
-    // Landscape views fill the first page; in portrait the list fits under them.
-    heading('Список мест', data.orientation === 'landscape'),
-    cargoTable(data),
-    ...totals(data),
-    // Small tables stay on one page together with their heading.
-    {
-      stack: [heading('Развесовка'), weightTable(data.summary.bodies), { text: cogNote(), fontSize: 8, color: MUTED, margin: [0, 6, 0, 0] }],
-      unbreakable: true,
-    },
-  ];
-  if (data.steps) content.push(...steps(data.steps, data.bodies.length > 1, data.orientation, data.units));
+  const content: Content[] = data.sections.flatMap((section, i): Content[] => {
+    const s: SectionData = { ...section, units: data.units, orientation: data.orientation };
+    const out: Content[] = [];
+    if (many) {
+      out.push({
+        text: [{ text: s.vehicleName, fontSize: 14 }, { text: `   ${vehicleSummary(s.bodies)}`, fontSize: 9, color: MUTED }],
+        margin: [0, 0, 0, 8],
+        pageBreak: i > 0 ? 'before' : undefined,
+      });
+    }
+    out.push(
+      overview(s, contentWidth, contentHeight - (many ? SECTION_TITLE : 0)),
+      // Landscape views fill the first page; in portrait the list fits under them.
+      heading('Список мест', data.orientation === 'landscape'),
+      cargoTable(s),
+      ...totals(s),
+      // Small tables stay on one page together with their heading.
+      {
+        stack: [heading('Развесовка'), weightTable(s.summary.bodies), { text: cogNote(), fontSize: 8, color: MUTED, margin: [0, 6, 0, 0] }],
+        unbreakable: true,
+      },
+    );
+    if (s.steps) out.push(...steps(s.steps, s.bodies.length > 1, s.orientation, s.units));
+    return out;
+  });
 
   return {
     pageSize: 'A4',
@@ -148,7 +175,7 @@ export function reportDocument(data: ReportData): TDocumentDefinitions {
 }
 
 /** First page: the vehicle from above and from the side, scaled together to fit the page. */
-function overview(data: ReportData, contentWidth: number, contentHeight: number): Content {
+function overview(data: SectionData, contentWidth: number, contentHeight: number): Content {
   const { top, side } = data.views;
   const notes = loadNotes(data.summary);
   const reserved = 30 + 2 * 24 + notes.length * 14;
@@ -220,7 +247,7 @@ function swatch(color: string): TableCell {
   return { canvas: [{ type: 'rect', x: 0, y: 1, w: 10, h: 10, r: 2, color }], alignment: 'center', margin: [5, 0, 0, 0] };
 }
 
-function cargoTable(data: ReportData): Content {
+function cargoTable(data: SectionData): Content {
   const bodyName = new Map(data.bodies.map((b) => [b.id, b.name]));
   const place = (row: CargoRow): TableCell => {
     if (row.status === 'dock') return cell('Док, не загружен', { color: WARNING });
@@ -252,7 +279,7 @@ const area = (cm2: number) => `${new Intl.NumberFormat('ru-RU', { maximumFractio
 const metres = (cm: number) => formatLength(cm, 'm');
 
 /** «Итог»: used / available / left per parameter, one table per body. */
-function totals(data: ReportData): Content[] {
+function totals(data: SectionData): Content[] {
   const many = data.summary.bodies.length > 1;
   return data.summary.bodies.map(
     (b, i): Content => ({
@@ -326,7 +353,7 @@ function cogNote(): string {
 }
 
 /** Loading instructions: step cards in a grid, earlier cargo grey, the step's items in colour. */
-function steps(data: NonNullable<ReportData['steps']>, showBody: boolean, orientation: PdfOrientation, units: Units): Content[] {
+function steps(data: NonNullable<ReportSection['steps']>, showBody: boolean, orientation: PdfOrientation, units: Units): Content[] {
   const out: Content[] = [
     heading('Порядок загрузки', true),
     {

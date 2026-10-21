@@ -30,6 +30,7 @@ export interface PlanSummary {
   id: string;
   name: string;
   version: number;
+  vehicleCount: number;
   bodyCount: number;
   itemCount: number;
   createdAt: string;

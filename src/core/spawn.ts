@@ -1,5 +1,24 @@
 import type { Box, Dims, Rect } from './types';
 import { EPS, overlapsXZ } from './geometry';
+import { stagingRegions, type VehicleLayout } from './layout';
+
+/**
+ * A floor spot on the dock of a vehicle for new or unloaded cargo (see {@link stagingRegions}).
+ * When the dock is full, the corner by the doors: the gravity pass then puts the item on top.
+ */
+export function dockSpot(
+  size: Dims,
+  layout: VehicleLayout,
+  vehicleId: string | null | undefined,
+  occupied: readonly Box[],
+): { x: number; z: number } {
+  const regions = stagingRegions(layout, vehicleId);
+  for (const region of regions) {
+    const spot = findFreeSpot(size, region, occupied);
+    if (spot) return spot;
+  }
+  return { x: regions[0].maxX - size.l, z: regions[0].minZ };
+}
 
 /**
  * First free floor spot for a new item inside `region`, filling rows from the region's max X

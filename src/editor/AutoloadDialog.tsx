@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { autoload, type AutoloadBodyResult, type LeftReason } from '../core/autoload';
 import { COG_LONG_TOLERANCE } from '../core/stats';
 import { formatLength, formatPercent, formatWeight } from '../core/units';
-import { getLayout, useStore } from '../store/useStore';
+import { activeVehicle, layoutOf, useStore } from '../store/useStore';
 import { useUi } from '../store/useUi';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { plural } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -41,16 +42,27 @@ export function AutoloadDialog() {
 
 function AutoloadForm() {
   const items = useStore((s) => s.items);
-  const bodies = useStore((s) => s.bodies);
+  const vehicles = useStore((s) => s.vehicles);
+  const dockMode = useStore((s) => s.dockMode);
+  const active = useStore(activeVehicle);
   const applyItems = useStore((s) => s.applyItems);
   const setOpen = useUi((s) => s.setAutoloadOpen);
   const [allowStacking, setAllowStacking] = useState(true);
   const [repackAll, setRepackAll] = useState(false);
+  const [target, setTarget] = useState<'active' | 'all'>('active');
+  const many = vehicles.length > 1;
 
   const result = useMemo(
-    () => autoload(items, getLayout(bodies), { allowStacking, repackAll }),
-    [items, bodies, allowStacking, repackAll],
+    () =>
+      autoload(items, layoutOf({ vehicles, dockMode }), {
+        allowStacking,
+        repackAll,
+        // All vehicles: the active one first.
+        vehicleIds: target === 'active' ? [active.id] : [active.id, ...vehicles.filter((v) => v !== active).map((v) => v.id)],
+      }),
+    [items, vehicles, dockMode, active, target, allowStacking, repackAll],
   );
+  const vehicleName = new Map(vehicles.map((v) => [v.id, v.name]));
   const considered = result.loaded.length + result.left.length;
   const reasons = Object.entries(
     result.left.reduce<Record<string, number>>((acc, l) => ({ ...acc, [l.reason]: (acc[l.reason] ?? 0) + 1 }), {}),
@@ -77,6 +89,33 @@ function AutoloadForm() {
         </DialogDescription>
       </DialogHeader>
 
+      {many && (
+        <div className="space-y-1.5">
+          <div className="text-sm font-medium">Куда грузить</div>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            spacing={0}
+            className="w-full"
+            value={target}
+            onValueChange={(v) => v && setTarget(v as 'active' | 'all')}
+            aria-label="Куда грузить"
+          >
+            <ToggleGroupItem value="active" className="min-w-0 flex-1">
+              <span className="truncate">В «{active.name}»</span>
+            </ToggleGroupItem>
+            <ToggleGroupItem value="all" className="flex-1">
+              Во все машины
+            </ToggleGroupItem>
+          </ToggleGroup>
+          <p className="text-xs text-muted-foreground">
+            {dockMode === 'own'
+              ? 'Каждая машина берёт грузы со своей зоны накопления.'
+              : 'Грузы берутся с общей зоны накопления' + (target === 'all' ? ', машины заполняются по очереди.' : '.')}
+          </p>
+        </div>
+      )}
+
       <div className="space-y-2">
         <Option
           id="autoload-stack"
@@ -90,7 +129,7 @@ function AutoloadForm() {
           checked={repackAll}
           onChange={setRepackAll}
           title="Переложить заново всё"
-          hint="Включая грузы, которые уже стоят в кузове"
+          hint={many ? 'Включая грузы, которые уже стоят в выбранных машинах' : 'Включая грузы, которые уже стоят в кузове'}
         />
       </div>
 
@@ -110,7 +149,7 @@ function AutoloadForm() {
 
         <div className="mt-3 space-y-3">
           {result.bodies.map((b) => (
-            <BodyResult key={b.id} b={b} />
+            <BodyResult key={b.id} b={b} vehicleName={many ? vehicleName.get(b.vehicleId) : undefined} />
           ))}
         </div>
 
@@ -154,13 +193,16 @@ function Option(props: { id: string; checked: boolean; onChange(v: boolean): voi
   );
 }
 
-function BodyResult({ b }: { b: AutoloadBodyResult }) {
+function BodyResult({ b, vehicleName }: { b: AutoloadBodyResult; vehicleName?: string }) {
   const share = b.maxLoad ? Math.min(1, b.weight / b.maxLoad) : null;
   const offset = Math.round(b.cogOffset ?? 0);
   return (
     <div>
       <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="font-medium">{b.name}</span>
+        <span className="min-w-0 truncate font-medium">
+          {vehicleName && <span className="text-muted-foreground">{vehicleName} · </span>}
+          {b.name}
+        </span>
         <span className="text-muted-foreground tabular-nums">
           {plural(b.count, ITEMS)} · {formatWeight(b.weight)}
           {b.maxLoad !== undefined && ` из ${formatWeight(b.maxLoad)}`}
