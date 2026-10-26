@@ -12,7 +12,7 @@ import { beginMove, evaluateMove, finishMove } from './move';
 import { snapFootprint } from './snapping';
 import { resizeBox } from './resize';
 import { dockSpot, findFreeSpot } from './spawn';
-import { classify, computeStats } from './stats';
+import { classify, computeStats, loadLengths } from './stats';
 import { cargoRows, formatSeqList, summarizeLoad } from './report';
 import { loadingOrder, loadingSteps } from './loadingOrder';
 
@@ -193,6 +193,27 @@ describe('geometry & placement', () => {
     const stats = computeStats([item({ l: 120, w: 80, h: 150 }, { x: 1240, z: -122.5 })], layout);
     expect(stats.inside).toBe(1);
     expect(stats.bodies[0].ldm).toBeCloseTo(1.2);
+  });
+
+  it('measures the load length from the front wall to the rearmost cargo', () => {
+    const train = layoutOf([body(1360, 245, 270, 'semi'), body(800, 245, 270, 'tr')]);
+    const [semi, trailer] = train.bodies;
+    const front = semi.box.max.x;
+    const items = [
+      item({ l: 120 }, { x: front - 120, z: semi.box.min.z }),
+      item({ l: 120 }, { x: front - 500, z: semi.box.min.z }),
+      // On top of the second one, overhanging it at the back: counts too.
+      item({ l: 80 }, { x: front - 540, y: 100, z: semi.box.min.z }),
+      // Sticks out of the trailer's rear doors: only the part inside counts.
+      item({ l: 100 }, { x: trailer.box.min.x - 30, z: trailer.box.min.z }),
+      item({}, { x: -400, z: 0 }), // on the dock
+    ];
+    const lengths = loadLengths(items, train);
+    expect(lengths.get(semi.body.id)).toBeCloseTo(540);
+    expect(lengths.get(trailer.body.id)).toBeCloseTo(800);
+    expect(lengths.size).toBe(2);
+    const stats = computeStats(items, train);
+    expect(stats.bodies.map((b) => b.ldm)).toEqual([5.4, 8]);
   });
 
   it('finds free spots in rows without overlaps', () => {

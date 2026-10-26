@@ -19,6 +19,7 @@ import { CameraRig, type ViewPreset } from './CameraRig';
 import { CargoView } from './CargoView';
 import { GuidesView } from './GuidesView';
 import { InteractionManager } from './InteractionManager';
+import { LoadLengthView } from './LoadLengthView';
 import { SelectionView } from './SelectionView';
 import { VehicleView } from './VehicleView';
 import { COLORS } from './theme';
@@ -42,6 +43,7 @@ export class SceneEngine {
   private readonly rig: CameraRig;
   private readonly vehicle = new VehicleView();
   private readonly cargo = new CargoView();
+  private readonly loadLength = new LoadLengthView();
   private readonly selection = new SelectionView();
   private readonly interaction: InteractionManager;
   private readonly sun = new THREE.DirectionalLight('#ffffff', 2.3);
@@ -99,7 +101,7 @@ export class SceneEngine {
     this.yard.position.y = -DECK_HEIGHT;
     this.yard.receiveShadow = true;
 
-    this.scene.add(this.yard, this.vehicle.root, this.cargo.root, this.selection.root, this.guides.root);
+    this.scene.add(this.yard, this.vehicle.root, this.cargo.root, this.loadLength.root, this.selection.root, this.guides.root);
 
     this.rig = new CameraRig(this.camera, this.renderer.domElement, this.requestRender);
     this.interaction = new InteractionManager(this, host);
@@ -111,6 +113,7 @@ export class SceneEngine {
     const state = useStore.getState();
     this.rebuildVehicle();
     this.syncCargo();
+    this.syncLoadLength();
     this.syncSelection();
     this.rig.setLocked(state.settings.cameraLocked);
     this.rig.setView('iso', this.focusBounds(state.activeVehicleId), false);
@@ -156,6 +159,7 @@ export class SceneEngine {
   setPreview(items: CargoItem[] | null): void {
     this.preview = items;
     this.syncCargo();
+    this.syncLoadLength();
     this.syncSelection();
     this.requestRender();
   }
@@ -248,6 +252,7 @@ export class SceneEngine {
     this.rig.dispose();
     this.vehicle.dispose();
     this.cargo.dispose();
+    this.loadLength.dispose();
     this.selection.dispose();
     this.guides.dispose();
     this.yard.geometry.dispose();
@@ -269,6 +274,7 @@ export class SceneEngine {
     const fading = this.cargo.animate(this.lastFrame ? Math.min(100, now - this.lastFrame) : 16);
     this.lastFrame = animating || fading ? now : 0;
     this.vehicle.fitLabels(this.camera, this.viewportWidth, this.viewportHeight);
+    this.loadLength.fitLabels(this.camera, this.viewportWidth, this.viewportHeight);
     this.selection.beforeRender(this.camera, this.viewportWidth, this.viewportHeight);
     this.renderer.render(this.scene, this.camera);
     this.labelRenderer.render(this.scene, this.camera);
@@ -291,6 +297,7 @@ export class SceneEngine {
     ) {
       this.syncCargo();
     }
+    if (bodiesChanged || viewChanged || s.items !== prev.items) this.syncLoadLength();
     if (
       bodiesChanged ||
       viewChanged ||
@@ -395,6 +402,14 @@ export class SceneEngine {
       showLabels: s.settings.showLabels,
     });
     this.cargo.setHighlight(this.hoverId, s.selectedId);
+  }
+
+  private syncLoadLength(): void {
+    const s = useStore.getState();
+    this.loadLength.update(this.displayItems, layoutOf(s), {
+      units: s.settings.units,
+      show: s.settings.showDimensions,
+    });
   }
 
   private syncSelection(): void {

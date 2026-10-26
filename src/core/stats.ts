@@ -99,6 +99,25 @@ export function centreOfGravity(
   };
 }
 
+/** Floor length `box` takes from the front wall of `body`, cm (what sticks out of the rear doors does not count). */
+function lengthFromFront(box: Box, body: Box): number {
+  return body.max.x - Math.max(body.min.x, box.min.x);
+}
+
+/**
+ * Loading length of every body with cargo: from the front wall to the rearmost cargo in it, cm, by body id.
+ * The same as `BodyStats.ldm` without the rest of the stats (cheap enough for drag previews).
+ */
+export function loadLengths(items: readonly CargoItem[], layout: VehicleLayout): Map<string, number> {
+  const lengths = new Map<string, number>();
+  for (const item of items) {
+    const box = itemBox(item);
+    const pb = bodyAt(box, layout);
+    if (pb) lengths.set(pb.body.id, Math.max(lengths.get(pb.body.id) ?? 0, lengthFromFront(box, pb.box)));
+  }
+  return lengths;
+}
+
 export function isBalanced(fromFront: number | null, offset: number | null, body: Box): boolean {
   if (fromFront === null || offset === null) return true;
   const width = body.max.z - body.min.z;
@@ -169,8 +188,7 @@ export function computeStats(items: readonly CargoItem[], layout: VehicleLayout)
     stats.count++;
     stats.weight += weight;
     stats.used += volume(intersection(box, pb.box));
-    const usedFromFront = pb.box.max.x - Math.max(pb.box.min.x, box.min.x);
-    stats.ldm = Math.max(stats.ldm, usedFromFront / 100);
+    stats.ldm = Math.max(stats.ldm, lengthFromFront(box, pb.box) / 100);
     const list = weighted.get(pb.body.id) ?? [];
     list.push({ box, weight });
     weighted.set(pb.body.id, list);
