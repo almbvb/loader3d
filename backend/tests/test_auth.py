@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -179,6 +180,50 @@ async def test_previous_refresh_token_is_honoured_within_grace_period(client):
     assert response.status_code == 200, response.text
     # The late tab receives the current token instead of rotating again.
     assert refresh_cookie(client) == current
+
+
+async def test_parallel_refreshes_with_the_same_token_all_succeed(make_client: ClientFactory):
+    """Several tabs restored at once: they all send the same cookie."""
+    first = await make_client()
+    await register(first)
+    token = refresh_cookie(first)
+    tabs = [await make_client() for _ in range(5)]
+    for tab in tabs:
+        use_refresh_token(tab, token)
+
+    responses = await asyncio.gather(*(tab.post("/api/auth/refresh") for tab in tabs))
+    assert [r.status_code for r in responses] == [200] * 5
+    # Exactly one of them rotated the token, the others received the result.
+    assert len({refresh_cookie(tab) for tab in tabs}) == 1
+    assert refresh_cookie(tabs[0]) != token
+
+
+async def test_a_late_tab_survives_another_refresh_in_between(client, make_client: ClientFactory):
+    """A tab sends the old token after another tab already refreshed twice with the new one."""
+    await register(client)
+    old = refresh_cookie(client)
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+    current = refresh_cookie(client)
+    # Within the grace period the token is not rotated again, so `old` stays the previous one.
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+    assert refresh_cookie(client) == current
+
+    late = await make_client()
+    use_refresh_token(late, old)
+    response = await late.post("/api/auth/refresh")
+    assert response.status_code == 200, response.text
+    assert refresh_cookie(late) == current
+    assert (await client.post("/api/auth/refresh")).status_code == 200
+
+
+async def test_refresh_rotates_again_after_the_grace_period(client, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(app.auth, "REFRESH_REUSE_GRACE", timedelta(0))
+    await register(client)
+    seen = {refresh_cookie(client)}
+    for _ in range(3):
+        assert (await client.post("/api/auth/refresh")).status_code == 200
+        seen.add(refresh_cookie(client))
+    assert len(seen) == 4
 
 
 async def test_reused_refresh_token_ends_the_session(client, monkeypatch: pytest.MonkeyPatch):

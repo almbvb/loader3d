@@ -1,4 +1,3 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, LayoutGrid, LogOut, UserRound } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -19,12 +18,10 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
   const user = useAuth((s) => s.user);
   const logout = useAuth((s) => s.logout);
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   if (!user) return null;
 
   const signOut = async () => {
     await logout().catch(() => {});
-    queryClient.clear();
     navigate('/login', { replace: true });
   };
 

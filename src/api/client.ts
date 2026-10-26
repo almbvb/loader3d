@@ -4,8 +4,9 @@ import type { AuthResponse } from './types';
  * fetch wrapper for the backend (/api, same origin: Caddy in production, the Vite proxy in dev).
  *
  * The access token lives only in memory. The refresh token is an httpOnly cookie the browser sends
- * to /api/auth/* by itself. A 401 triggers one refresh (shared by all concurrent requests) and a
- * retry; if the refresh fails too, the session is over and `onSessionLost` fires.
+ * to /api/auth/* by itself. A 401 triggers one refresh (shared by all concurrent requests, skipped
+ * when another request already refreshed while this one was in flight) and a retry; if the refresh
+ * fails too, the session is over and `onSessionLost` fires.
  */
 
 export class ApiError extends Error {
@@ -25,6 +26,7 @@ export class ApiError extends Error {
 let accessToken: string | null = null;
 let refreshing: Promise<AuthResponse | null> | null = null;
 let sessionLost: () => void = () => {};
+let refreshed: (auth: AuthResponse) => void = () => {};
 
 export function setAccessToken(token: string | null): void {
   accessToken = token;
@@ -32,6 +34,11 @@ export function setAccessToken(token: string | null): void {
 
 export function onSessionLost(handler: () => void): void {
   sessionLost = handler;
+}
+
+/** After every successful refresh. All tabs share the cookie, so it may be another account by now. */
+export function onRefreshed(handler: (auth: AuthResponse) => void): void {
+  refreshed = handler;
 }
 
 interface RequestOptions {
@@ -44,16 +51,18 @@ interface RequestOptions {
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const sentToken = accessToken;
   const response = await send(path, options);
-  if (response.status === 401 && options.auth !== false) {
-    const refreshed = await refreshSession();
-    if (!refreshed) {
+  if (response.status !== 401 || options.auth === false) return parse<T>(response);
+  // Sent with a token that another request has replaced meanwhile: repeating it with the new one is
+  // enough, a second refresh would only rotate the cookie again.
+  if (accessToken === null || accessToken === sentToken) {
+    if (!(await refreshSession())) {
       sessionLost();
       throw await toApiError(response);
     }
-    return parse<T>(await send(path, options));
   }
-  return parse<T>(response);
+  return parse<T>(await send(path, options));
 }
 
 /**
@@ -72,6 +81,7 @@ export function refreshSession(): Promise<AuthResponse | null> {
       if (!response.ok) throw await toApiError(response);
       const auth = (await response.json()) as AuthResponse;
       accessToken = auth.accessToken;
+      refreshed(auth);
       return auth;
     } finally {
       refreshing = null;

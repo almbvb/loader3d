@@ -72,8 +72,8 @@ class User(Base):
 class AuthSession(Base):
     """A login on one device. The refresh token carries its id (`sid`) and the current `refresh_jti`.
 
-    Every refresh rotates the jti. Presenting an older jti means the token was copied, so the
-    session is revoked, except for `previous_jti` within a short grace period (parallel tabs).
+    A refresh rotates the jti (at most once per grace period). Presenting an older jti means the token
+    was copied, so the session is revoked, except for `previous_jti` within that grace period (parallel tabs).
     """
 
     __tablename__ = "sessions"

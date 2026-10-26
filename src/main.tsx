@@ -19,6 +19,11 @@ const queryClient = new QueryClient({
   },
 });
 
+// Cached responses belong to the account that fetched them: none of them may survive a logout, a lost
+// session or a login as someone else.
+useAuth.subscribe((state, prev) => {
+  if (state.user?.id !== prev.user?.id) queryClient.clear();
+});
 void useAuth.getState().bootstrap();
 
 createRoot(document.getElementById('root')!).render(

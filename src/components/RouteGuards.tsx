@@ -17,11 +17,17 @@ export function FullScreenLoader({ label = 'Загрузка…' }: { label?: st
   );
 }
 
+/** While the session is being restored on page load. */
+function SessionLoader() {
+  const reconnecting = useAuth((s) => s.reconnecting);
+  return <FullScreenLoader label={reconnecting ? 'Нет связи с сервером, переподключаемся…' : undefined} />;
+}
+
 /** Pages for logged-in users; others go to /login and come back afterwards. */
 export function RequireAuth({ children }: { children: ReactNode }) {
   const status = useAuth((s) => s.status);
   const location = useLocation();
-  if (status === 'loading') return <FullScreenLoader />;
+  if (status === 'loading') return <SessionLoader />;
   if (status === 'anonymous') {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
@@ -32,7 +38,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 export function PublicOnly({ children }: { children: ReactNode }) {
   const status = useAuth((s) => s.status);
   const location = useLocation();
-  if (status === 'loading') return <FullScreenLoader />;
+  if (status === 'loading') return <SessionLoader />;
   if (status === 'authenticated') {
     return <Navigate to={(location.state as { from?: string } | null)?.from ?? '/'} replace />;
   }

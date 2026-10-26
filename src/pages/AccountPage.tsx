@@ -277,7 +277,6 @@ function SessionRow({ session, pending, onRevoke }: { session: SessionInfo; pend
 
 function DangerCard() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const sessionEnded = useAuth((s) => s.sessionEnded);
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState('');
@@ -285,7 +284,6 @@ function DangerCard() {
     mutationFn: () => userApi.deleteAccount(password),
     onSuccess: () => {
       sessionEnded();
-      queryClient.clear();
       navigate('/login', { replace: true });
       toast.success('Аккаунт удалён');
     },

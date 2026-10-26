@@ -130,6 +130,11 @@ async def refresh_session(
     ensure_active(session, user)
 
     if claims.jti == session.refresh_jti:
+        if session.rotated_at is not None and now - session.rotated_at <= REFRESH_REUSE_GRACE:
+            # Rotated a moment ago (another tab, a reloaded page): hand out the current token again
+            # instead of rotating once more, so the token it replaced stays valid for the whole grace
+            # period. Otherwise a tab still holding that one would look like a thief.
+            return user, _issue(settings, session)
         rotated = await db.execute(
             update(AuthSession)
             .where(AuthSession.id == session.id, AuthSession.refresh_jti == claims.jti)
@@ -143,9 +148,10 @@ async def refresh_session(
             )
             .execution_options(synchronize_session=False)
         )
+        # Commit even when nothing was updated: on SQLite the UPDATE holds the database write lock.
+        await db.commit()
         await db.refresh(session)
         if rotated.rowcount == 1:  # type: ignore[attr-defined]
-            await db.commit()
             return user, _issue(settings, session)
         # A parallel request rotated this token first: it is now the previous one, handled below.
         ensure_active(session, user)

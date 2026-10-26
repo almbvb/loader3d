@@ -122,8 +122,9 @@ export async function flush(): Promise<void> {
       if (usePlanSync.getState().planId !== planId) return;
       if (error instanceof ApiError && error.code === 'version_conflict') {
         set({ status: 'conflict', conflictVersion: Number(error.detail.currentVersion) });
-      } else if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 401) {
-        // Deleted plan, invalid data: repeating will not help.
+      } else if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        // Deleted plan, invalid data, session over (api() has already tried to refresh it):
+        // repeating will not help.
         set({ status: 'error', error: error.status === 404 ? 'Схема удалена' : error.message });
       } else {
         set({ status: 'error', error: errorMessage(error) });
