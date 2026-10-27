@@ -30,8 +30,6 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = Field(15, ge=1, le=24 * 60)
     refresh_token_ttl_days: int = Field(30, ge=1, le=365)
 
-    # None = Secure cookies in production only. Browsers drop Secure cookies on plain-HTTP sites.
-    cookie_secure: bool | None = None
     registration_open: bool = True
     # Comma-separated origins allowed to call the API cross-origin.
     # Empty: same-origin only, which is how Caddy (production) and the Vite proxy (development) serve it.
@@ -62,10 +60,6 @@ class Settings(BaseSettings):
         if self.database_password is not None:
             url = url.set(password=self.database_password.get_secret_value())
         return url.render_as_string(hide_password=False)
-
-    @property
-    def secure_cookies(self) -> bool:
-        return self.cookie_secure if self.cookie_secure is not None else self.environment == "production"
 
 
 @lru_cache

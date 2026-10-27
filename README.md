@@ -52,7 +52,6 @@ docker compose up -d
 | `JWT_SECRET` | — (обязательно) | Ключ подписи токенов, 32+ случайных символа; смена разлогинивает всех |
 | `ACCESS_TOKEN_TTL_MINUTES` / `REFRESH_TOKEN_TTL_DAYS` | `15` / `30` | Время жизни access-токена и сессии без активности |
 | `REGISTRATION_OPEN` | `true` | `false` — новые аккаунты создавать нельзя |
-| `COOKIE_SECURE` | `true` | `false` только если сайт открывают по голому HTTP (иначе вход не переживёт перезагрузку) |
 | `POSTGRES_PASSWORD` | — (обязательно) | Пароль БД, применяется при первом создании базы |
 | `POSTGRES_DB` / `POSTGRES_USER` | `loader3d` / `loader3d` | Имя базы и пользователя |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | Ротация логов контейнеров |
@@ -91,7 +90,7 @@ uv run ruff check . && uv run ruff format --check .
 `npm run dev` проксирует `/api` на `127.0.0.1:8000`, поэтому фронтенд в разработке ходит в API с того
 же адреса, что и в проде. Настройки бэкенда — переменные окружения (или `backend/.env`):
 `DATABASE_URL`, `DATABASE_PASSWORD`, `JWT_SECRET`, `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`,
-`REGISTRATION_OPEN`, `COOKIE_SECURE`, `CORS_ORIGINS`, `ENVIRONMENT` (см. [config.py](backend/app/config.py)).
+`REGISTRATION_OPEN`, `CORS_ORIGINS`, `ENVIRONMENT` (см. [config.py](backend/app/config.py)).
 
 Изменили модели в `app/models.py` — нужна миграция, которая работает и на SQLite, и на Postgres:
 `uv run alembic revision --autogenerate -m "что изменилось"`, проверить файл в `migrations/versions/`.
@@ -126,7 +125,8 @@ uv run ruff check . && uv run ruff format --check .
 - **Access-токен** (JWT, 15 мин) — из ответа login/register/refresh, держать в памяти (не в localStorage)
   и слать в `Authorization: Bearer …`.
 - **Refresh-токен** (JWT, 30 дней) — только в httpOnly-cookie `loader3d_refresh` с `Path=/api/auth` и
-  `SameSite=Strict`: JavaScript его не видит, браузер шлёт его только на `/api/auth/*`.
+  `SameSite=Strict` (и `Secure`, если сайт открыт по HTTPS — по голому HTTP браузер такую cookie
+  выбросил бы): JavaScript её не видит, браузер шлёт её только на `/api/auth/*`.
 - При загрузке страницы — `POST /api/auth/refresh`: 200 → пользователь вошёл, 401 → показать вход.
 - На `401` с `code: "token_expired"` — один раз `refresh` и повторить запрос; если и refresh дал 401 —
   на экран входа.

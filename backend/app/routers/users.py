@@ -1,8 +1,7 @@
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Request, Response, status
 
 from app.auth import CurrentAuth, clear_refresh_cookie, revoke_sessions
 from app.db import Db
-from app.deps import SettingsDep
 from app.errors import ApiError
 from app.schemas.auth import AccountDeleteIn, PasswordChangeIn, UserOut, UserUpdateIn
 from app.security import hash_password, verify_password
@@ -39,11 +38,11 @@ async def change_password(body: PasswordChangeIn, auth: CurrentAuth, db: Db) -> 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_me(
-    body: AccountDeleteIn, auth: CurrentAuth, response: Response, db: Db, settings: SettingsDep
+    body: AccountDeleteIn, auth: CurrentAuth, request: Request, response: Response, db: Db
 ) -> None:
     """Deletes the account with all its plans and sessions. Requires the password."""
     if not await verify_password(auth.user.password_hash, body.password):
         raise _wrong_password()
     await db.delete(auth.user)
     await db.commit()
-    clear_refresh_cookie(response, settings)
+    clear_refresh_cookie(response, request)

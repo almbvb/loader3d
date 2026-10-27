@@ -50,7 +50,6 @@ services:
       ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
       REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
       REGISTRATION_OPEN: ${REGISTRATION_OPEN:-true}
-      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     depends_on:
       db:
         condition: service_healthy

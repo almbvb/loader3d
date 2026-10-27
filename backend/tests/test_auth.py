@@ -1,17 +1,20 @@
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
 import app.auth
 from app.auth import REFRESH_COOKIE
-from app.config import DEV_JWT_SECRET, Settings
+from app.config import Settings
 from app.main import create_app
-from app.models import utcnow
+from app.models import Base, utcnow
 from app.security import encode_token
 from tests.conftest import PASSWORD, ClientFactory, error_code, login, make_settings, register
 
@@ -42,7 +45,7 @@ async def test_register_logs_in_and_sets_refresh_cookie(client):
     assert "HttpOnly" in cookie
     assert "Path=/api/auth" in cookie
     assert "SameSite=strict" in cookie
-    assert "Secure" not in cookie  # development
+    assert "Secure" not in cookie  # plain HTTP
 
     me = await client.get("/api/users/me", headers={"authorization": f"Bearer {body['accessToken']}"})
     assert me.status_code == 200
@@ -73,7 +76,6 @@ async def test_register_validates_input(client, payload):
 
 
 async def test_registration_can_be_closed(tmp_path: Path):
-    import httpx
 
     closed = create_app(make_settings(tmp_path, registration_open=False))
     async with closed.router.lifespan_context(closed):
@@ -351,10 +353,59 @@ def test_production_requires_a_real_jwt_secret():
         Settings(_env_file=None, environment="production")  # type: ignore[call-arg]
     with pytest.raises(ValidationError, match="JWT_SECRET"):
         Settings(_env_file=None, environment="production", jwt_secret="short")  # type: ignore[call-arg]
-    prod = Settings(_env_file=None, environment="production", jwt_secret="x" * 32)  # type: ignore[call-arg]
-    assert prod.secure_cookies is True
-    dev = Settings(_env_file=None, jwt_secret=DEV_JWT_SECRET)  # type: ignore[call-arg]
-    assert dev.secure_cookies is False
+    Settings(_env_file=None, environment="production", jwt_secret="x" * 32)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "origin", "secure"),
+    [
+        # The site opened by IP over plain HTTP: a Secure cookie would be dropped by the browser.
+        ("http://testserver", "http://203.0.113.7", False),
+        # HTTPS terminated by a proxy in front: the backend itself is reached over HTTP.
+        ("http://testserver", "https://loader.example.com", True),
+        ("https://testserver", "https://loader.example.com", True),
+        # No Origin (not a browser page): the scheme of the request decides.
+        ("https://testserver", None, True),
+        ("http://testserver", None, False),
+    ],
+)
+async def test_refresh_cookie_is_secure_exactly_on_https(
+    tmp_path: Path, base_url: str, origin: str | None, secure: bool
+):
+    async with production_client(tmp_path, base_url, origin) as client:
+        response = await client.post(
+            "/api/auth/register", json={"email": "a@example.com", "password": PASSWORD}
+        )
+        assert response.status_code == 201, response.text
+        assert ("; Secure" in response.headers["set-cookie"]) is secure
+        logout = await client.post("/api/auth/logout")
+        assert ("; Secure" in logout.headers["set-cookie"]) is secure
+
+
+async def test_login_survives_a_reload_on_a_plain_http_production_site(tmp_path: Path):
+    """The default deployment (SITE_ADDRESS=:80, opened by IP) used to lose the login on every reload."""
+    async with production_client(tmp_path, "http://testserver", "http://203.0.113.7") as client:
+        await register(client)
+        del client.headers["authorization"]  # a reload: the access token in memory is gone
+        refreshed = await client.post("/api/auth/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+
+
+@asynccontextmanager
+async def production_client(
+    tmp_path: Path, base_url: str, origin: str | None
+) -> AsyncIterator[httpx.AsyncClient]:
+    api = create_app(make_settings(tmp_path, environment="production", jwt_secret="x" * 32))
+    async with api.router.lifespan_context(api):
+        async with api.state.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api),
+            base_url=base_url,
+            headers={"origin": origin} if origin else {},
+        ) as client:
+            yield client
 
 
 def test_database_password_may_contain_any_characters():

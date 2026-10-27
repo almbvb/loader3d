@@ -29,8 +29,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 RefreshCookie = Annotated[str | None, Cookie(alias=REFRESH_COOKIE, include_in_schema=False)]
 
 
-def _auth_response(response: Response, settings: SettingsDep, user: User, tokens: IssuedTokens) -> AuthOut:
-    set_refresh_cookie(response, settings, tokens)
+def _auth_response(response: Response, request: Request, user: User, tokens: IssuedTokens) -> AuthOut:
+    set_refresh_cookie(response, request, tokens)
     return AuthOut(
         access_token=tokens.access_token, expires_in=tokens.expires_in, user=UserOut.model_validate(user)
     )
@@ -59,7 +59,7 @@ async def register(
         raise email_taken from None
     tokens = await start_session(db, settings, user, request)
     await db.commit()
-    return _auth_response(response, settings, user, tokens)
+    return _auth_response(response, request, user, tokens)
 
 
 @router.post("/login")
@@ -77,7 +77,7 @@ async def login(
         user.password_hash = await hash_password(body.password)
     tokens = await start_session(db, settings, user, request)
     await db.commit()
-    return _auth_response(response, settings, user, tokens)
+    return _auth_response(response, request, user, tokens)
 
 
 @router.post("/refresh")
@@ -88,18 +88,18 @@ async def refresh(
     try:
         user, tokens = await refresh_session(db, settings, refresh_token, request)
     except ApiError as exc:
-        exc.headers = {**(exc.headers or {}), **clear_refresh_cookie_headers(settings)}
+        exc.headers = {**(exc.headers or {}), **clear_refresh_cookie_headers(request)}
         raise
-    return _auth_response(response, settings, user, tokens)
+    return _auth_response(response, request, user, tokens)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
-    response: Response, db: Db, settings: SettingsDep, refresh_token: RefreshCookie = None
+    request: Request, response: Response, db: Db, settings: SettingsDep, refresh_token: RefreshCookie = None
 ) -> None:
     """Ends the current session. Works with an expired access token: only the cookie is needed."""
     await end_session_by_refresh_token(db, settings, refresh_token)
-    clear_refresh_cookie(response, settings)
+    clear_refresh_cookie(response, request)
 
 
 @router.get("/sessions")
@@ -130,13 +130,13 @@ async def list_sessions(auth: CurrentAuth, db: Db) -> list[SessionOut]:
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_session(
-    session_id: uuid.UUID, auth: CurrentAuth, response: Response, db: Db, settings: SettingsDep
+    session_id: uuid.UUID, auth: CurrentAuth, request: Request, response: Response, db: Db
 ) -> None:
     if not await revoke_sessions(db, auth.user.id, only=session_id):
         raise not_found("session_not_found", "Сессия не найдена")
     await db.commit()
     if session_id == auth.session.id:
-        clear_refresh_cookie(response, settings)
+        clear_refresh_cookie(response, request)
 
 
 @router.delete("/sessions", status_code=status.HTTP_204_NO_CONTENT)

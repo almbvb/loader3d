@@ -200,32 +200,45 @@ async def end_session_by_refresh_token(
     await db.commit()
 
 
-def set_refresh_cookie(response: Response, settings: Settings, tokens: IssuedTokens) -> None:
+def _secure_cookie(request: Request) -> bool:
+    """`Secure` exactly when the browser is on HTTPS: over plain HTTP (a site opened by IP) the browser
+    drops a Secure cookie, and the login would not survive a reload or the first access-token expiry.
+
+    The page's Origin is what the browser sees, whatever proxies (Caddy, nginx) terminate TLS in between;
+    requests without one (not from a browser page) fall back to the scheme of the request itself.
+    """
+    origin = request.headers.get("origin")
+    if origin and origin != "null":
+        return origin.lower().startswith("https://")
+    return request.url.scheme == "https"
+
+
+def set_refresh_cookie(response: Response, request: Request, tokens: IssuedTokens) -> None:
     response.set_cookie(
         REFRESH_COOKIE,
         tokens.refresh_token,
         max_age=max(0, int((tokens.refresh_expires_at - utcnow()).total_seconds())),
         path=REFRESH_COOKIE_PATH,
-        secure=settings.secure_cookies,
+        secure=_secure_cookie(request),
         httponly=True,
         samesite="strict",
     )
 
 
-def clear_refresh_cookie(response: Response, settings: Settings) -> None:
+def clear_refresh_cookie(response: Response, request: Request) -> None:
     response.delete_cookie(
         REFRESH_COOKIE,
         path=REFRESH_COOKIE_PATH,
-        secure=settings.secure_cookies,
+        secure=_secure_cookie(request),
         httponly=True,
         samesite="strict",
     )
 
 
-def clear_refresh_cookie_headers(settings: Settings) -> dict[str, str]:
+def clear_refresh_cookie_headers(request: Request) -> dict[str, str]:
     """`Set-Cookie` that removes the refresh cookie, for error responses raised as exceptions."""
     response = Response()
-    clear_refresh_cookie(response, settings)
+    clear_refresh_cookie(response, request)
     return {"set-cookie": response.headers["set-cookie"]}
 
 
