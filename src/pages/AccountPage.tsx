@@ -1,12 +1,13 @@
-import { useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, KeyRound, LogOut, Monitor, ShieldAlert, Smartphone, UserRound } from 'lucide-react';
+import { ArrowLeft, Check, KeyRound, LogOut, Monitor, ShieldAlert, Smartphone, Sparkles, UserRound } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiError, errorMessage } from '@/api/client';
 import { authApi, userApi } from '@/api/endpoints';
-import type { SessionInfo } from '@/api/types';
+import type { SessionInfo, TierLimits } from '@/api/types';
 import { AppHeader } from '@/components/AppHeader';
+import { UpgradeDialog, useUpgrade } from '@/components/UpgradeDialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,7 +26,8 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/c
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
-import { describeUserAgent, fullDate, timeAgo } from '@/lib/format';
+import { describeUserAgent, fullDate, plural, timeAgo } from '@/lib/format';
+import { TIERS_ENABLED, TRIAL_DAYS, subscriptionSummary } from '@/lib/tiers';
 import { useAuth } from '@/store/useAuth';
 
 export function AccountPage() {
@@ -42,11 +44,13 @@ export function AccountPage() {
         <p className="mt-1 text-sm text-muted-foreground">Профиль, пароль и устройства, на которых выполнен вход.</p>
         <div className="mt-6 flex flex-col gap-5">
           <ProfileCard />
+          {TIERS_ENABLED && <SubscriptionCard />}
           <PasswordCard />
           <SessionsCard />
           <DangerCard />
         </div>
       </main>
+      {TIERS_ENABLED && <UpgradeDialog />}
     </div>
   );
 }
@@ -112,6 +116,67 @@ function ProfileCard() {
           </Button>
         </CardFooter>
       </form>
+    </Card>
+  );
+}
+
+function limitLines(limits: TierLimits): string[] {
+  return [
+    limits.plans === null ? 'Схем — без ограничений' : `Схем — до ${limits.plans}`,
+    `В схеме — до ${plural(limits.vehicles, ['машины', 'машин', 'машин'])} и ${plural(limits.items, ['груза', 'грузов', 'грузов'])}`,
+    limits.autoload ? 'Автозагрузка с развесовкой' : 'Автозагрузка — на «Профи»',
+    limits.pdfSteps ? 'Пошаговая PDF-инструкция' : 'Пошаговая PDF-инструкция — на «Профи»',
+  ];
+}
+
+function SubscriptionCard() {
+  const sub = useAuth((s) => s.user?.subscription);
+  const show = useUpgrade((s) => s.show);
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (hash === '#subscription') document.getElementById('subscription')?.scrollIntoView({ block: 'start' });
+  }, [hash]);
+  if (!sub) return null;
+
+  return (
+    <Card id="subscription" className="scroll-mt-16">
+      <CardHeader className="flex items-center gap-3">
+        <SectionIcon icon={Sparkles} />
+        <div className="flex-1">
+          <CardTitle className="flex items-center gap-2">
+            Тариф «{sub.name}»{sub.trial && <Badge variant="secondary">Пробный период</Badge>}
+          </CardTitle>
+          <CardDescription>{subscriptionSummary(sub)}</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ul className="grid gap-2 text-sm sm:grid-cols-2">
+          {limitLines(sub.limits).map((line) => (
+            <li key={line} className="flex items-start gap-2">
+              <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+              {line}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+      <CardFooter className="flex-wrap justify-end gap-2 border-t pt-4 pb-4">
+        <Button variant="ghost" asChild>
+          <Link to="/pricing">Сравнить тарифы</Link>
+        </Button>
+        {sub.tier === 'free' ? (
+          <Button onClick={() => show()}>
+            {sub.trialAvailable ? `«Профи» на ${TRIAL_DAYS} дней бесплатно` : 'Подключить «Профи»'}
+          </Button>
+        ) : sub.tier === 'pro' ? (
+          <Button variant="outline" onClick={() => show(undefined, 'pro')}>
+            {sub.trial ? 'Оформить подписку' : 'Продлить'}
+          </Button>
+        ) : (
+          <Button variant="outline" onClick={() => show(undefined, 'custom')}>
+            Связаться по договору
+          </Button>
+        )}
+      </CardFooter>
     </Card>
   );
 }

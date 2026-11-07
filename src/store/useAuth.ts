@@ -12,7 +12,7 @@ interface AuthState {
   /** Restores the session from the refresh cookie on page load. */
   bootstrap(): Promise<void>;
   login(email: string, password: string): Promise<void>;
-  register(email: string, password: string, displayName?: string): Promise<void>;
+  register(email: string, password: string, displayName?: string, tier?: 'free' | 'pro'): Promise<void>;
   logout(): Promise<void>;
   setUser(user: User): void;
   /** The server ended the session (revoked, expired, account deleted). */
@@ -107,8 +107,8 @@ export const useAuth = create<AuthState>()((set, get) => {
       channel?.postMessage({ type: 'login', userId: auth.user.id } satisfies AuthEvent);
     },
 
-    async register(email, password, displayName) {
-      const auth = await authApi.register(email, password, displayName);
+    async register(email, password, displayName, tier) {
+      const auth = await authApi.register(email, password, displayName, tier);
       signedIn(auth);
       channel?.postMessage({ type: 'login', userId: auth.user.id } satisfies AuthEvent);
     },

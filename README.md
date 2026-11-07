@@ -34,6 +34,9 @@ cp .env.example .env     # задать JWT_SECRET и POSTGRES_PASSWORD (openssl
 docker compose up -d
 ```
 
+Доступ к админ-панели (`/admin`) — у аккаунта с правами администратора. Выдать права существующему
+аккаунту: `docker compose exec api python -m app make-admin you@example.com` (`--revoke` — забрать).
+
 Репозиторий приватный: для `git clone` на сервере нужен deploy key (SSH) или токен GitHub.
 Обновление: `git pull && docker compose up -d --build`. Логи: `docker compose logs -f`.
 Если сервер развёрнут до появления бэкенда — перед обновлением добавить в `.env` новые переменные
@@ -51,7 +54,8 @@ docker compose up -d
 | `COMPOSE_PROJECT_NAME` | `loader3d` | Префикс имён контейнера, образа и томов |
 | `JWT_SECRET` | — (обязательно) | Ключ подписи токенов, 32+ случайных символа; смена разлогинивает всех |
 | `ACCESS_TOKEN_TTL_MINUTES` / `REFRESH_TOKEN_TTL_DAYS` | `15` / `30` | Время жизни access-токена и сессии без активности |
-| `REGISTRATION_OPEN` | `true` | `false` — новые аккаунты создавать нельзя |
+| `REGISTRATION_OPEN` | `true` | `false` — новые аккаунты создавать нельзя (админ может добавить их в админ-панели) |
+| `TIERS_ENABLED` | `false` | `true` — тарифы: цены на сайте, выбор при регистрации, лимиты, тариф в аккаунте и админке; `false` — о тарифах ни слова, без лимитов; после смены — `--build` |
 | `POSTGRES_PASSWORD` | — (обязательно) | Пароль БД, применяется при первом создании базы |
 | `POSTGRES_DB` / `POSTGRES_USER` | `loader3d` / `loader3d` | Имя базы и пользователя |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | Ротация логов контейнеров |
@@ -67,8 +71,9 @@ docker compose up -d
   `HTTPS_PORT=127.0.0.1:8443`, а во внешнем прокси — `proxy_pass http://127.0.0.1:8080`.
 - **Просто по IP** — значения по умолчанию, приложение откроется на `http://<IP сервера>/`.
 
-Схемы хранятся в аккаунте на сервере (в браузере — только настройки отображения). План, который
-остался в браузере от версии без аккаунтов, главная страница предлагает сохранить как схему.
+Схемы и настройки отображения хранятся в аккаунте на сервере. План, который остался в браузере от версии
+без аккаунтов, главная страница предлагает сохранить как схему; настройки из браузера переезжают в
+аккаунт при первом входе.
 
 ## Бэкенд (API)
 
@@ -88,9 +93,11 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 `npm run dev` проксирует `/api` на `127.0.0.1:8000`, поэтому фронтенд в разработке ходит в API с того
-же адреса, что и в проде. Настройки бэкенда — переменные окружения (или `backend/.env`):
-`DATABASE_URL`, `DATABASE_PASSWORD`, `JWT_SECRET`, `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`,
-`REGISTRATION_OPEN`, `CORS_ORIGINS`, `ENVIRONMENT` (см. [config.py](backend/app/config.py)).
+же адреса, что и в проде. Настройки бэкенда — переменные окружения, `.env` в корне репозитория (тот же, что
+для деплоя) или `backend/.env` (важнее корневого): `DATABASE_URL`, `DATABASE_PASSWORD`, `JWT_SECRET`,
+`ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`, `REGISTRATION_OPEN`, `TIERS_ENABLED`, `CORS_ORIGINS`,
+`ENVIRONMENT` (см. [config.py](backend/app/config.py)). `TIERS_ENABLED` из корневого `.env` читает и Vite —
+после его смены перезапустите оба процесса.
 
 Изменили модели в `app/models.py` — нужна миграция, которая работает и на SQLite, и на Postgres:
 `uv run alembic revision --autogenerate -m "что изменилось"`, проверить файл в `migrations/versions/`.
@@ -106,7 +113,9 @@ uv run ruff check . && uv run ruff format --check .
 | `POST /api/auth/logout` | Завершить текущую сессию (нужна только cookie) |
 | `GET /api/auth/sessions` | Активные сессии (устройства): user agent, IP, последняя активность, `current` |
 | `DELETE /api/auth/sessions/{id}` / `DELETE /api/auth/sessions` | Завершить одну / все остальные сессии |
-| `GET /api/users/me`, `PATCH /api/users/me` | Профиль, смена `displayName` |
+| `GET /api/users/me`, `PATCH /api/users/me` | Профиль (`isAdmin`, `settings`, `subscription` — тариф, срок, лимиты), смена `displayName` |
+| `PATCH /api/users/me/settings` | Настройки отображения редактора (только изменённые поля), общие для всех устройств |
+| `POST /api/users/me/trial` | Пробный период «Профи» (один раз на аккаунт) |
 | `POST /api/users/me/password` | Смена пароля, остальные сессии завершаются |
 | `DELETE /api/users/me` | Удаление аккаунта со всеми схемами (`{password}` в теле) |
 | `GET /api/plans?q=&sort=-updatedAt&limit=20&offset=0` | Главная: схемы пользователя без содержимого (`vehicleCount`, `bodyCount`, `itemCount`, даты), поиск по названию, `sort`: `updatedAt`/`createdAt`/`name`, `-` — по убыванию |
@@ -115,6 +124,13 @@ uv run ruff check . && uv run ruff format --check .
 | `PATCH /api/plans/{id}` | Сохранить `{version, name?, data?}`; `409 version_conflict`, если схему уже изменили |
 | `POST /api/plans/{id}/duplicate` | Копия `{name?}` (по умолчанию «… (копия)») |
 | `DELETE /api/plans/{id}` | Удалить |
+| `POST /api/leads` | Заявка с сайта или из окна смены тарифа `{name, email?, phone?, company?, message?, tier?}` (без входа) |
+| `GET /api/admin/stats` | Админ: пользователи, активность, тарифы, схемы, новые заявки |
+| `GET /api/admin/users?q=&tier=&status=&sort=&limit=&offset=` | Админ: пользователи с тарифом, числом схем, сессий и последней активностью |
+| `POST /api/admin/users`, `PATCH /api/admin/users/{id}` | Админ: создать аккаунт; имя, блокировка (`isActive`, сессии завершаются), права (`isAdmin`) |
+| `PUT /api/admin/users/{id}/subscription` | Админ: тариф, срок, пробный период, лимиты «Индивидуального», заметка |
+| `POST /api/admin/users/{id}/password`, `DELETE …/sessions`, `DELETE /api/admin/users/{id}` | Админ: новый пароль, выход везде, удаление |
+| `GET /api/admin/leads`, `PATCH/DELETE /api/admin/leads/{id}` | Админ: заявки, отметка «обработана», удаление |
 | `GET /api/health` | Проверка живости и связи с БД |
 
 Ошибки: `{"detail": {"code": "...", "message": "..."}}` — `code` для логики клиента, `message` по-русски
@@ -144,8 +160,20 @@ uv run ruff check . && uv run ruff format --check .
 
 ## Что умеет
 
-- **Аккаунты**: регистрация и вход, сессия переживает перезагрузку страницы; страница «Аккаунт» — имя,
-  смена пароля, список устройств с завершением сессий, удаление аккаунта.
+- **Тарифы** — включаются `TIERS_ENABLED=true` в `.env` (по умолчанию выключены: сайт и приложение о тарифах
+  не говорят, лимитов нет, API отдаёт `subscription: null`). Лимиты — `backend/app/tiers.py`, цены и тексты —
+  `src/lib/tiers.ts`: «Старт» — бесплатно, 3 схемы,
+  1 машина и до 100 грузов в схеме; «Профи» — без лимита схем, до 10 машин и 5000 грузов, автозагрузка и
+  пошаговая PDF-инструкция, 14 дней бесплатно один раз; «Индивидуальный» — по договору, лимиты и срок задаёт
+  админ. Онлайн-оплаты нет: платный тариф подключает и продлевает админ, истёкший работает как «Старт» (схемы
+  сверх лимита открываются и правятся, но не растут). Аккаунты, созданные до тарифов, получили
+  «Индивидуальный» без срока. Упёрлись в лимит — окно с пробным периодом или заявкой.
+- **Админ-панель** (`/admin`): статистика, пользователи (поиск, фильтры по тарифу и статусу), тариф и срок,
+  лимиты «Индивидуального», блокировка, права администратора, новый пароль, завершение сессий, удаление,
+  создание аккаунтов; заявки с сайта.
+- **Аккаунты**: регистрация (с выбором «Старт» или пробного «Профи») и вход, сессия переживает перезагрузку
+  страницы; страница «Аккаунт» — имя, тариф, смена пароля, список устройств с завершением сессий, удаление аккаунта.
+  Настройки отображения (размеры, номера, границы кузова, единицы, прозрачность…) сохраняются в аккаунте.
 - **Главная — «Мои схемы»**: карточки схем (количество грузов и кузовов, когда изменена), поиск по названию,
   сортировка, создание с выбором транспорта, переименование, дублирование, скачивание JSON, удаление,
   импорт JSON.
@@ -259,15 +287,15 @@ src/
     autoload.ts      автозагрузка: ряды от передней стенки, ярусы, развесовка, грузоподъёмность, выбор машин
     report.ts        цифры отчёта: занято / максимум / остаток по кузову, список мест с группировкой
     loadingOrder.ts  порядок загрузки сзади / сбоку / сверху и разбиение на шаги (ряды)
-  store/           zustand: useStore — план + история (undo/redo) + активная машина + настройки (persist только настроек),
-                   useAuth — кто вошёл, useUi — состояние панелей редактора
+  store/           zustand: useStore — план + история (undo/redo) + активная машина + настройки + лимиты тарифа,
+                   useAuth — кто вошёл, useUi — состояние панелей редактора, accountSync — настройки и лимиты из аккаунта
   scene/           three.js, императивно, рендер по требованию
     SceneEngine.ts   сцена, свет, рендер-цикл, подписка на store, рентген грузов, API для UI и инструментов
     InteractionManager.ts  маршрутизация указателя: фон → OrbitControls, груз → MoveTool, ручка → ResizeTool
     tools/           MoveTool, ResizeTool (интерфейс Tool для новых жестов)
     VehicleView / CargoView / SelectionView / GuidesView / LoadLengthView / DimensionLine / CameraRig
   api/             fetch-клиент /api (access-токен в памяти, refresh по cookie при 401), типы, эндпоинты
-  pages/           AuthPage (вход/регистрация), HomePage (схемы), EditorPage, AccountPage
+  pages/           AuthPage (вход/регистрация), HomePage (схемы), EditorPage, AccountPage, AdminPage
   editor/          интерфейс редактора вокруг сцены: шапка, вьюпорт с оверлеями (VehiclePanel — машины и кузова,
                    XrayControl — прозрачность), CargoPanel — плавающая панель грузов, AutoloadDialog — автозагрузка,
                    PdfExportDialog — экспорт в PDF
@@ -276,17 +304,19 @@ src/
                    exportPdf.ts — сборка и скачивание
     planSync.ts      автосохранение открытой схемы (PATCH с версией, конфликты)
   components/      общие компоненты; ui/ — компоненты shadcn (добавлять: npx shadcn@latest add <имя>)
-  lib/             форматирование (склонения, даты), файлы планов, запросы схем (TanStack Query)
+  lib/             форматирование (склонения, даты), файлы планов, запросы схем (TanStack Query), tiers.ts — тарифы
   index.css        Tailwind + токены темы; scene.css — DOM-подписи 3D-сцены
 backend/
   app/
     main.py          create_app(): роутеры под /api, движок БД в lifespan
     config.py        настройки из переменных окружения
-    models.py        User, AuthSession (сессия = устройство), Plan (схема)
+    models.py        User (+ роль админа, настройки, подписка), AuthSession (сессия = устройство), Plan (схема), Lead (заявка)
+    tiers.py         тарифы и их лимиты, пробный период, истёкшая подписка
     security.py      Argon2id, кодирование/проверка JWT
     auth.py          выдача, ротация и отзыв сессий; зависимость CurrentAuth
     schemas/         тела запросов/ответов; plan_data.py — валидация Plan из src/core/types.ts
-    routers/         auth, users, plans, health
+    routers/         auth, users, plans, leads, admin, health
+    __main__.py      `python -m app` (миграции + сервер), `python -m app make-admin EMAIL`
   migrations/      Alembic (SQLite и Postgres)
   tests/           pytest
 ```

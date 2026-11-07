@@ -17,22 +17,28 @@ from app.auth import (
     set_refresh_cookie,
     start_session,
 )
+from app.config import Settings
 from app.db import Db
 from app.deps import SettingsDep
 from app.errors import ApiError, not_found, unauthorized
 from app.models import AuthSession, User, utcnow
 from app.schemas.auth import AuthOut, LoginIn, RegisterIn, SessionOut, UserOut
 from app.security import hash_password, password_needs_rehash, verify_password
+from app.tiers import start_trial
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 RefreshCookie = Annotated[str | None, Cookie(alias=REFRESH_COOKIE, include_in_schema=False)]
 
 
-def _auth_response(response: Response, request: Request, user: User, tokens: IssuedTokens) -> AuthOut:
+def _auth_response(
+    response: Response, request: Request, settings: Settings, user: User, tokens: IssuedTokens
+) -> AuthOut:
     set_refresh_cookie(response, request, tokens)
     return AuthOut(
-        access_token=tokens.access_token, expires_in=tokens.expires_in, user=UserOut.model_validate(user)
+        access_token=tokens.access_token,
+        expires_in=tokens.expires_in,
+        user=UserOut.of(user, settings.tiers_enabled),
     )
 
 
@@ -52,6 +58,8 @@ async def register(
         password_hash=await hash_password(body.password),
         display_name=body.display_name or body.email.split("@", 1)[0][:100],
     )
+    if body.tier == "pro" and settings.tiers_enabled:
+        start_trial(user, utcnow())
     db.add(user)
     try:
         await db.flush()
@@ -59,7 +67,7 @@ async def register(
         raise email_taken from None
     tokens = await start_session(db, settings, user, request)
     await db.commit()
-    return _auth_response(response, request, user, tokens)
+    return _auth_response(response, request, settings, user, tokens)
 
 
 @router.post("/login")
@@ -67,17 +75,16 @@ async def login(
     body: LoginIn, request: Request, response: Response, db: Db, settings: SettingsDep
 ) -> AuthOut:
     user = await db.scalar(select(User).where(User.email == body.email))
-    if (
-        not await verify_password(user.password_hash if user else None, body.password)
-        or not user
-        or not user.is_active
-    ):
+    if not await verify_password(user.password_hash if user else None, body.password) or not user:
         raise unauthorized("invalid_credentials", "Неверный email или пароль")
+    if not user.is_active:
+        # Told only after the right password, so it does not reveal accounts to someone guessing.
+        raise ApiError(status.HTTP_403_FORBIDDEN, "account_disabled", "Аккаунт заблокирован администратором")
     if password_needs_rehash(user.password_hash):
         user.password_hash = await hash_password(body.password)
     tokens = await start_session(db, settings, user, request)
     await db.commit()
-    return _auth_response(response, request, user, tokens)
+    return _auth_response(response, request, settings, user, tokens)
 
 
 @router.post("/refresh")
@@ -90,7 +97,7 @@ async def refresh(
     except ApiError as exc:
         exc.headers = {**(exc.headers or {}), **clear_refresh_cookie_headers(request)}
         raise
-    return _auth_response(response, request, user, tokens)
+    return _auth_response(response, request, settings, user, tokens)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

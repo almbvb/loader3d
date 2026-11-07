@@ -1,12 +1,13 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
-import { FullScreenLoader, PublicOnly, RequireAuth } from './components/RouteGuards';
+import { FullScreenLoader, PublicOnly, RequireAdmin, RequireAuth } from './components/RouteGuards';
 import { AccountPage } from './pages/AccountPage';
 import { AuthPage } from './pages/AuthPage';
 import { HomePage } from './pages/HomePage';
 
 // The editor brings three.js and the scene: loaded only when a plan is opened.
 const EditorPage = lazy(() => import('./pages/EditorPage').then((m) => ({ default: m.EditorPage })));
+const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
 
 export function App() {
   return (
@@ -25,6 +26,16 @@ export function App() {
         }
       />
       <Route path="/account" element={<RequireAuth><AccountPage /></RequireAuth>} />
+      <Route
+        path="/admin"
+        element={
+          <RequireAdmin>
+            <Suspense fallback={<FullScreenLoader />}>
+              <AdminPage />
+            </Suspense>
+          </RequireAdmin>
+        }
+      />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

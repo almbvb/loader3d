@@ -9,10 +9,12 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import update
 
 from app.config import Settings
 from app.main import create_app
-from app.models import Base
+from app.models import Base, User
+from app.routers import leads
 
 TEST_JWT_SECRET = "test-secret-0123456789abcdef0123456789abcdef"
 PASSWORD = "correct horse battery"
@@ -91,3 +93,15 @@ async def login(client: httpx.AsyncClient, email: str = "anna@example.com", pass
 
 def error_code(response: httpx.Response) -> str:
     return response.json()["detail"]["code"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_lead_rate_limit():
+    leads._recent.clear()
+
+
+async def make_admin(app: FastAPI, email: str = "anna@example.com") -> None:
+    """What `python -m app make-admin` does."""
+    async with app.state.sessionmaker() as db:
+        await db.execute(update(User).where(User.email == email).values(is_admin=True))
+        await db.commit()

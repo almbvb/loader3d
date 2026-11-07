@@ -34,6 +34,12 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   return children;
 }
 
+/** The admin panel: other users go to their plans. */
+export function RequireAdmin({ children }: { children: ReactNode }) {
+  const isAdmin = useAuth((s) => s.user?.isAdmin ?? false);
+  return <RequireAuth>{isAdmin ? children : <Navigate to="/" replace />}</RequireAuth>;
+}
+
 /** Login / register: a logged-in user goes straight to the app. */
 export function PublicOnly({ children }: { children: ReactNode }) {
   const status = useAuth((s) => s.status);

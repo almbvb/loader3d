@@ -6,6 +6,9 @@ import type { VehicleLayout } from '../core/layout';
 import { classify, computeStats, type Placement, type PlanStats } from '../core/stats';
 import type { Units } from '../core/units';
 import { activeVehicle, getLayout, useStore } from '../store/useStore';
+import { useAuth } from '../store/useAuth';
+import { useUi } from '../store/useUi';
+import { useUpgrade } from '@/components/UpgradeDialog';
 
 export function useLayout(): VehicleLayout {
   const vehicles = useStore((s) => s.vehicles);
@@ -63,4 +66,17 @@ export function guardSceneShortcuts(e: KeyboardEvent<HTMLElement>): void {
   const target = e.target as HTMLElement;
   if (target.closest(MODAL)) e.stopPropagation();
   else if (e.key.startsWith('Arrow') && target.closest(ARROW_WIDGETS)) e.stopPropagation();
+}
+
+/** Whether the account's tier includes a feature (true while the account is not known yet). */
+export function useFeature(feature: 'autoload' | 'pdfSteps'): boolean {
+  return useAuth((s) => s.user?.subscription?.limits[feature] ?? true);
+}
+
+/** Opens the automatic loading dialog, or the offer of «Профи» on tiers without it. */
+export function useOpenAutoload(): () => void {
+  const allowed = useFeature('autoload');
+  const setAutoloadOpen = useUi((s) => s.setAutoloadOpen);
+  const show = useUpgrade((s) => s.show);
+  return () => (allowed ? setAutoloadOpen(true) : show('Автозагрузка с развесовкой доступна на тарифе «Профи».'));
 }

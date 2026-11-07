@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
 import type { CargoBody, CargoItem, Dims, DockMode, Plan, Vehicle } from '../core/types';
 import { computeLayout, ownerVehicle, type VehicleLayout } from '../core/layout';
 import { itemBox, itemSize, sanitizeItemDims, uid } from '../core/item';
@@ -48,6 +47,22 @@ export interface Settings {
 
 export const XRAY_OPACITY_RANGE: [number, number] = [0.08, 0.8];
 
+/** Limits of the account's tier for one plan (src/lib/tiers.ts); null — only the plan maximums. */
+export interface PlanLimits {
+  vehicles: number;
+  items: number;
+  /** Shown in messages: «Старт», «Профи»… */
+  tierName: string;
+}
+
+/** An edit refused because of the tier: the editor shows an offer to upgrade. */
+export interface LimitHit {
+  kind: 'vehicles' | 'items';
+  limit: number;
+  tierName: string;
+  at: number;
+}
+
 /** The undoable part of the state. */
 export interface PlanState extends Plan {
   paletteIndex: number;
@@ -75,6 +90,8 @@ export interface AppState extends PlanState {
   activeVehicleId: string;
   settings: Settings;
   history: History;
+  limits: PlanLimits | null;
+  limitHit: LimitHit | null;
 
   addItems(input: NewCargo): void;
   updateItem(id: string, patch: { name?: string; color?: string; dims?: Dims; weight?: number }): void;
@@ -110,9 +127,12 @@ export interface AppState extends PlanState {
   setActiveVehicle(id: string): void;
 
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void;
+  /** All settings at once: the saved settings of the account that logged in (store/settingsSync.ts). */
+  replaceSettings(settings: Settings): void;
+  setLimits(limits: PlanLimits | null): void;
   undo(): void;
   redo(): void;
-  /** Replaces the plan as an undoable edit (import from a file, the example). */
+  /** Replaces the plan as an undoable edit (import from a file, the example). Throws over the tier limits. */
   loadPlan(plan: unknown): void;
   /** Opens a saved plan: replaces everything and starts a fresh undo history. */
   openPlan(plan: unknown): void;
@@ -121,7 +141,7 @@ export interface AppState extends PlanState {
 const HISTORY_LIMIT = 100;
 const COALESCE_MS = 1000;
 
-const DEFAULT_SETTINGS: Settings = {
+export const DEFAULT_SETTINGS: Settings = {
   highlightOverflow: true,
   showDimensions: true,
   showLabels: true,
@@ -135,6 +155,24 @@ const DEFAULT_SETTINGS: Settings = {
   xray: 'selection',
   xrayOpacity: 0.22,
 };
+
+const UNITS: readonly Units[] = ['mm', 'cm', 'm'];
+const XRAY_MODES: readonly XrayMode[] = ['off', 'selection', 'auto', 'all'];
+
+/** Settings from the server (or an old browser) with unknown keys dropped and bad values replaced by defaults. */
+export function sanitizeSettings(raw: unknown): Settings {
+  const out: Settings = { ...DEFAULT_SETTINGS };
+  if (!raw || typeof raw !== 'object') return out;
+  const values = raw as Record<string, unknown>;
+  for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof Settings>) {
+    if (typeof values[key] === typeof DEFAULT_SETTINGS[key]) (out as unknown as Record<string, unknown>)[key] = values[key];
+  }
+  if (!UNITS.includes(out.units)) out.units = DEFAULT_SETTINGS.units;
+  if (!XRAY_MODES.includes(out.xray)) out.xray = DEFAULT_SETTINGS.xray;
+  const [lo, hi] = XRAY_OPACITY_RANGE;
+  if (!(out.xrayOpacity >= lo && out.xrayOpacity <= hi)) out.xrayOpacity = DEFAULT_SETTINGS.xrayOpacity;
+  return out;
+}
 
 const layoutCache = new WeakMap<readonly Vehicle[], Partial<Record<DockMode, VehicleLayout>>>();
 
@@ -245,366 +283,388 @@ export function createDemoPlan(): PlanState {
   return { vehicles, dockMode: 'shared', items: settle(items), nextSeq: seq, paletteIndex: 5 };
 }
 
+// Plans live on the server and display settings in the account (store/settingsSync.ts): nothing here is
+// kept in the browser. (The pre-accounts plan is still under LEGACY_PLAN_KEY until the user imports it.)
 export const useStore = create<AppState>()(
-  persist(
-    (set, get) => {
-      const commit = (patch: Partial<PlanState>, extra: Partial<AppState> = {}, key?: string) => {
+  (set, get) => {
+    const commit = (patch: Partial<PlanState>, extra: Partial<AppState> = {}, key?: string) => {
+      const s = get();
+      const now = Date.now();
+      const coalesce = key !== undefined && s.history.lastKey === key && now - s.history.lastAt < COALESCE_MS;
+      const past = coalesce ? s.history.past : [...s.history.past, pickPlan(s)].slice(-HISTORY_LIMIT);
+      const vehicles = patch.vehicles ?? s.vehicles;
+      const activeVehicleId = keepActive(vehicles, extra.activeVehicleId ?? s.activeVehicleId);
+      set({ ...patch, ...extra, activeVehicleId, history: { past, future: [], lastKey: key ?? null, lastAt: now } });
+    };
+
+    const keepSelection = (items: CargoItem[], selectedId: string | null) =>
+      selectedId && items.some((i) => i.id === selectedId) ? selectedId : null;
+
+    /** The vehicle an item belongs to, if any. */
+    const vehicleOf = (s: Pick<AppState, 'vehicles' | 'dockMode'>, item: CargoItem | undefined) =>
+      item ? (ownerVehicle(itemBox(item), layoutOf(s))?.vehicle.id ?? null) : null;
+
+    /** New vehicles; cargo moves along, cargo of removed bodies goes to the dock. */
+    const withVehicles = (s: AppState, vehicles: Vehicle[], dockMode = s.dockMode, fallback = s.activeVehicleId) => ({
+      vehicles,
+      dockMode,
+      items: relayout(s.items, layoutOf(s), getLayout(vehicles, dockMode), keepActive(vehicles, fallback)),
+    });
+
+    const refuse = (kind: LimitHit['kind'], limits: PlanLimits) =>
+      set({ limitHit: { kind, limit: limits[kind], tierName: limits.tierName, at: Date.now() } });
+
+    const setBodies = (s: AppState, vehicleId: string, change: (bodies: CargoBody[]) => CargoBody[]) =>
+      withVehicles(
+        s,
+        s.vehicles.map((v) => (v.id === vehicleId ? { ...v, bodies: change(v.bodies) } : v)),
+      );
+
+    const demo = createDemoPlan();
+    return {
+      ...demo,
+      selectedId: null,
+      activeVehicleId: demo.vehicles[0].id,
+      settings: DEFAULT_SETTINGS,
+      history: { past: [], future: [], lastKey: null, lastAt: 0 },
+      limits: null,
+      limitHit: null,
+
+      addItems({ dims, name, count = 1, weight }) {
         const s = get();
-        const now = Date.now();
-        const coalesce = key !== undefined && s.history.lastKey === key && now - s.history.lastAt < COALESCE_MS;
-        const past = coalesce ? s.history.past : [...s.history.past, pickPlan(s)].slice(-HISTORY_LIMIT);
-        const vehicles = patch.vehicles ?? s.vehicles;
-        const activeVehicleId = keepActive(vehicles, extra.activeVehicleId ?? s.activeVehicleId);
-        set({ ...patch, ...extra, activeVehicleId, history: { past, future: [], lastKey: key ?? null, lastAt: now } });
-      };
-
-      const keepSelection = (items: CargoItem[], selectedId: string | null) =>
-        selectedId && items.some((i) => i.id === selectedId) ? selectedId : null;
-
-      /** The vehicle an item belongs to, if any. */
-      const vehicleOf = (s: Pick<AppState, 'vehicles' | 'dockMode'>, item: CargoItem | undefined) =>
-        item ? (ownerVehicle(itemBox(item), layoutOf(s))?.vehicle.id ?? null) : null;
-
-      /** New vehicles; cargo moves along, cargo of removed bodies goes to the dock. */
-      const withVehicles = (s: AppState, vehicles: Vehicle[], dockMode = s.dockMode, fallback = s.activeVehicleId) => ({
-        vehicles,
-        dockMode,
-        items: relayout(s.items, layoutOf(s), getLayout(vehicles, dockMode), keepActive(vehicles, fallback)),
-      });
-
-      const setBodies = (s: AppState, vehicleId: string, change: (bodies: CargoBody[]) => CargoBody[]) =>
-        withVehicles(
-          s,
-          s.vehicles.map((v) => (v.id === vehicleId ? { ...v, bodies: change(v.bodies) } : v)),
-        );
-
-      const demo = createDemoPlan();
-      return {
-        ...demo,
-        selectedId: null,
-        activeVehicleId: demo.vehicles[0].id,
-        settings: DEFAULT_SETTINGS,
-        history: { past: [], future: [], lastKey: null, lastAt: 0 },
-
-        addItems({ dims, name, count = 1, weight }) {
-          const s = get();
-          const layout = layoutOf(s);
-          const color = CARGO_COLORS[s.paletteIndex % CARGO_COLORS.length];
-          const clean = sanitizeItemDims(dims);
-          let items = [...s.items];
-          let seq = s.nextSeq;
-          const ids = new Set<string>();
-          for (let n = 0; n < Math.max(1, Math.min(200, Math.round(count))); n++) {
-            const item = placeOnDock(
-              {
-                id: uid('cargo'),
-                seq,
-                name: name?.trim() || 'Груз',
-                dims: clean,
-                orientation: { yaw: 0 },
-                pos: { x: 0, y: 0, z: 0 },
-                color,
-                ...(weight !== undefined && weight > 0 ? { weight: sanitizeWeight(weight) } : {}),
-              },
-              items,
-              layout,
-              s.activeVehicleId,
-            );
-            seq++;
-            ids.add(item.id);
-            items.push(item);
-          }
-          items = settle(items, { yieldIds: ids });
-          const last = items[items.length - 1];
-          commit({ items, nextSeq: seq, paletteIndex: s.paletteIndex + 1 }, { selectedId: last.id });
-        },
-
-        updateItem(id, patch) {
-          const s = get();
-          // A fixed item keeps its size (name, colour and weight may change).
-          if (patch.dims && pinnedIds(s.items).has(id)) patch = { ...patch, dims: undefined };
-          const items = s.items.map((i) => {
-            if (i.id !== id) return i;
-            const next = { ...i };
-            if (patch.name !== undefined) next.name = patch.name.trim() || i.name;
-            if (patch.color !== undefined) next.color = patch.color;
-            if (patch.dims) next.dims = sanitizeItemDims(patch.dims);
-            if (patch.weight !== undefined) next.weight = sanitizeWeight(patch.weight);
-            return next;
-          });
-          const geometryChanged = patch.dims !== undefined;
-          commit(
-            { items: geometryChanged ? settle(items, { yieldIds: new Set([id]) }) : items },
-            {},
-            `item:${id}:${Object.keys(patch).join(',')}`,
-          );
-        },
-
-        applyItems(items, key) {
-          const s = get();
-          const settled = settle(items);
-          const selectedId = keepSelection(settled, s.selectedId);
-          // A dragged item takes the active vehicle along to wherever it was dropped.
-          const follow = key === undefined ? vehicleOf(s, settled.find((i) => i.id === selectedId)) : null;
-          commit({ items: settled }, { selectedId, activeVehicleId: follow ?? s.activeVehicleId }, key);
-        },
-
-        removeItem(id) {
-          const s = get();
-          const items = settle(s.items.filter((i) => i.id !== id));
-          commit({ items }, { selectedId: s.selectedId === id ? null : s.selectedId });
-        },
-
-        duplicateItem(id) {
-          const s = get();
-          const source = s.items.find((i) => i.id === id);
-          if (!source) return;
-          const { locked: _, ...free } = source;
-          const copy = placeOnDock(
-            { ...free, id: uid('cargo'), seq: s.nextSeq, pos: { ...source.pos } },
-            s.items,
-            layoutOf(s),
-            vehicleOf(s, source) ?? s.activeVehicleId,
-          );
-          const items = settle([...s.items, copy], { yieldIds: new Set([copy.id]) });
-          commit({ items, nextSeq: s.nextSeq + 1 }, { selectedId: copy.id });
-        },
-
-        rotateItem(id, axis = 'y') {
-          const s = get();
-          if (pinnedIds(s.items).has(id)) return;
-          const items = s.items.map((i) => {
-            if (i.id !== id) return i;
-            // About the centre of the footprint; the bottom stays where it was, gravity does the rest.
-            const box = itemBox(i);
-            const orientation = rotate90(i.orientation, axis);
-            const size = effectiveDims(i.dims, orientation);
-            const cx = (box.min.x + box.max.x) / 2;
-            const cz = (box.min.z + box.max.z) / 2;
-            return { ...i, orientation, pos: { x: cx - size.l / 2, y: i.pos.y, z: cz - size.w / 2 } };
-          });
-          commit({ items: settle(items, { yieldIds: new Set([id]) }) });
-        },
-
-        nudgeItem(id, dx, dz) {
-          const s = get();
-          if (!s.items.some((i) => i.id === id) || pinnedIds(s.items).has(id)) return;
-          const layout = layoutOf(s);
-          const session = beginMove(s.items, id, true);
-          const root = session.members[0];
-          const result = evaluateMove(
-            session,
-            { x: root.pos.x + dx, z: root.pos.z + dz },
-            { floors: layout.floors, walls: layout.walls, snapThreshold: 0, preferY: root.pos.y },
-          );
-          commit({ items: finishMove(s.items, session, result.members) }, {}, `nudge:${id}`);
-        },
-
-        shiftLevel(id, dir) {
-          const s = get();
-          if (!s.items.some((i) => i.id === id) || pinnedIds(s.items).has(id)) return;
-          const session = beginMove(s.items, id, true);
-          const root = session.members[0];
-          const target = adjacentLevel(moveLevels(session), root.pos.y, dir);
-          if (target === null) return;
-          const layout = layoutOf(s);
-          const result = evaluateMove(
-            session,
-            { x: root.pos.x, z: root.pos.z },
-            { floors: layout.floors, walls: layout.walls, snapThreshold: 0, preferY: target },
-          );
-          commit({ items: finishMove(s.items, session, result.members) });
-        },
-
-        setLocked(id, locked) {
-          const s = get();
-          const item = s.items.find((i) => i.id === id);
-          if (!item || !!item.locked === locked) return;
-          const { locked: _, ...free } = item;
-          const next: CargoItem = locked ? { ...free, locked: true } : free;
-          commit({ items: s.items.map((i) => (i.id === id ? next : i)) });
-        },
-
-        clearItems() {
-          if (get().items.length === 0) return;
-          commit({ items: [] }, { selectedId: null });
-        },
-
-        select(id) {
-          const s = get();
-          const activeVehicleId = vehicleOf(s, s.items.find((i) => i.id === id)) ?? s.activeVehicleId;
-          if (s.selectedId !== id || s.activeVehicleId !== activeVehicleId) set({ selectedId: id, activeVehicleId });
-        },
-
-        updateBody(id, dims) {
-          const s = get();
-          const vehicles = mapBody(s.vehicles, id, (b) => ({ ...b, dims: clampBodyDims(dims) }));
-          commit(withVehicles(s, vehicles), {}, `body:${id}`);
-        },
-
-        setBodyMaxLoad(id, maxLoad) {
-          const s = get();
-          const vehicles = mapBody(s.vehicles, id, (b) => {
-            const { maxLoad: _, ...rest } = b;
-            return maxLoad === undefined
-              ? rest
-              : { ...rest, maxLoad: Math.min(BODY_MAX_LOAD_LIMIT, Math.max(0, Math.round(maxLoad))) };
-          });
-          commit({ vehicles }, {}, `body-load:${id}`);
-        },
-
-        addTrailer(vehicleId) {
-          const s = get();
-          const target = s.vehicles.find((v) => v.id === (vehicleId ?? s.activeVehicleId));
-          if (!target || target.bodies.length >= MAX_BODIES) return;
-          const last = target.bodies[target.bodies.length - 1];
-          const trailer = makeBody({
-            ...DEFAULT_TRAILER,
-            dims: { ...DEFAULT_TRAILER.dims, w: last.dims.w, h: last.dims.h },
-          });
-          commit(setBodies(s, target.id, (bodies) => [...bodies, trailer]), { activeVehicleId: target.id });
-        },
-
-        removeBody(id) {
-          const s = get();
-          const owner = s.vehicles.find((v) => v.bodies.some((b) => b.id === id));
-          if (!owner || owner.bodies.length <= 1) return;
-          commit(withVehicles(s, mapBody(s.vehicles, id, () => null), s.dockMode, owner.id));
-        },
-
-        applyVehiclePreset(presetId, vehicleId) {
-          const s = get();
-          const preset = VEHICLE_PRESETS.find((p) => p.id === presetId);
-          const target = s.vehicles.find((v) => v.id === (vehicleId ?? s.activeVehicleId));
-          if (!preset || !target) return;
-          // Reuse body ids by position so cargo stays in "the first body", "the second body"...
-          commit(
-            setBodies(s, target.id, (bodies) => preset.bodies.map((t, i) => makeBody(t, bodies[i]?.id))),
-            { activeVehicleId: target.id },
-          );
-        },
-
-        addVehicle(presetId) {
-          const s = get();
-          if (s.vehicles.length >= MAX_VEHICLES) return null;
-          const preset = VEHICLE_PRESETS.find((p) => p.id === presetId) ?? VEHICLE_PRESETS[0];
-          const vehicle: Vehicle = {
-            id: uid('veh'),
-            name: nextVehicleName(s.vehicles),
-            bodies: preset.bodies.map((b) => makeBody(b)),
-          };
-          commit(withVehicles(s, [...s.vehicles, vehicle]), { activeVehicleId: vehicle.id });
-          return vehicle.id;
-        },
-
-        removeVehicle(id) {
-          const s = get();
-          const index = s.vehicles.findIndex((v) => v.id === id);
-          if (index < 0 || s.vehicles.length <= 1) return;
-          const vehicles = s.vehicles.filter((v) => v.id !== id);
-          const active = s.activeVehicleId === id ? vehicles[Math.max(0, index - 1)].id : s.activeVehicleId;
-          commit(withVehicles(s, vehicles, s.dockMode, active), { activeVehicleId: active });
-        },
-
-        renameVehicle(id, name) {
-          const s = get();
-          const clean = name.trim().slice(0, 100);
-          if (!clean) return;
-          const vehicles = s.vehicles.map((v) => (v.id === id && v.name !== clean ? { ...v, name: clean } : v));
-          if (vehicles.every((v, i) => v === s.vehicles[i])) return;
-          commit({ vehicles }, {}, `vehicle-name:${id}`);
-        },
-
-        setDockMode(mode) {
-          const s = get();
-          if (s.dockMode === mode) return;
-          commit(withVehicles(s, s.vehicles, mode));
-        },
-
-        setActiveVehicle(id) {
-          const s = get();
-          if (s.activeVehicleId !== id && s.vehicles.some((v) => v.id === id)) set({ activeVehicleId: id });
-        },
-
-        setSetting(key, value) {
-          set({ settings: { ...get().settings, [key]: value } });
-        },
-
-        undo() {
-          const s = get();
-          const prev = s.history.past[s.history.past.length - 1];
-          if (!prev) return;
-          set({
-            ...prev,
-            selectedId: keepSelection(prev.items, s.selectedId),
-            activeVehicleId: keepActive(prev.vehicles, s.activeVehicleId),
-            history: {
-              past: s.history.past.slice(0, -1),
-              future: [pickPlan(s), ...s.history.future],
-              lastKey: null,
-              lastAt: 0,
+        let wanted = Math.max(1, Math.min(200, Math.round(count)));
+        if (s.limits) {
+          const room = s.limits.items - s.items.length;
+          if (room < wanted) refuse('items', s.limits);
+          if (room <= 0) return;
+          wanted = Math.min(wanted, room);
+        }
+        const layout = layoutOf(s);
+        const color = CARGO_COLORS[s.paletteIndex % CARGO_COLORS.length];
+        const clean = sanitizeItemDims(dims);
+        let items = [...s.items];
+        let seq = s.nextSeq;
+        const ids = new Set<string>();
+        for (let n = 0; n < wanted; n++) {
+          const item = placeOnDock(
+            {
+              id: uid('cargo'),
+              seq,
+              name: name?.trim() || 'Груз',
+              dims: clean,
+              orientation: { yaw: 0 },
+              pos: { x: 0, y: 0, z: 0 },
+              color,
+              ...(weight !== undefined && weight > 0 ? { weight: sanitizeWeight(weight) } : {}),
             },
-          });
-        },
-
-        redo() {
-          const s = get();
-          const next = s.history.future[0];
-          if (!next) return;
-          set({
-            ...next,
-            selectedId: keepSelection(next.items, s.selectedId),
-            activeVehicleId: keepActive(next.vehicles, s.activeVehicleId),
-            history: {
-              past: [...s.history.past, pickPlan(s)],
-              future: s.history.future.slice(1),
-              lastKey: null,
-              lastAt: 0,
-            },
-          });
-        },
-
-        loadPlan(raw) {
-          const plan = parsePlan(raw);
-          if (!plan) throw new Error('Файл не похож на план загрузки');
-          const items = settle(plan.items);
-          const nextSeq = Math.max(plan.nextSeq || 1, ...items.map((i) => i.seq + 1));
-          commit(
-            { vehicles: plan.vehicles, dockMode: plan.dockMode, items, nextSeq },
-            { selectedId: null, activeVehicleId: plan.vehicles[0].id },
-          );
-        },
-
-        openPlan(raw) {
-          const plan = parsePlan(raw);
-          if (!plan) throw new Error('Схема повреждена');
-          const items = settle(plan.items);
-          set({
-            vehicles: plan.vehicles,
-            dockMode: plan.dockMode,
             items,
-            nextSeq: Math.max(plan.nextSeq || 1, ...items.map((i) => i.seq + 1)),
-            paletteIndex: items.length,
-            selectedId: null,
-            activeVehicleId: plan.vehicles[0].id,
-            history: { past: [], future: [], lastKey: null, lastAt: 0 },
-          });
-        },
-      };
-    },
-    {
-      // Plans live on the server; only display preferences stay in the browser.
-      // (The pre-accounts plan is still under LEGACY_PLAN_KEY until the user imports it.)
-      name: 'loader3d:settings',
-      version: 1,
-      storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ settings: s.settings }),
-      merge: (persisted, current) => {
-        const settings = (persisted as Partial<AppState> | undefined)?.settings;
-        return { ...current, settings: { ...DEFAULT_SETTINGS, ...settings } };
+            layout,
+            s.activeVehicleId,
+          );
+          seq++;
+          ids.add(item.id);
+          items.push(item);
+        }
+        items = settle(items, { yieldIds: ids });
+        const last = items[items.length - 1];
+        commit({ items, nextSeq: seq, paletteIndex: s.paletteIndex + 1 }, { selectedId: last.id });
       },
-    },
-  ),
+
+      updateItem(id, patch) {
+        const s = get();
+        // A fixed item keeps its size (name, colour and weight may change).
+        if (patch.dims && pinnedIds(s.items).has(id)) patch = { ...patch, dims: undefined };
+        const items = s.items.map((i) => {
+          if (i.id !== id) return i;
+          const next = { ...i };
+          if (patch.name !== undefined) next.name = patch.name.trim() || i.name;
+          if (patch.color !== undefined) next.color = patch.color;
+          if (patch.dims) next.dims = sanitizeItemDims(patch.dims);
+          if (patch.weight !== undefined) next.weight = sanitizeWeight(patch.weight);
+          return next;
+        });
+        const geometryChanged = patch.dims !== undefined;
+        commit(
+          { items: geometryChanged ? settle(items, { yieldIds: new Set([id]) }) : items },
+          {},
+          `item:${id}:${Object.keys(patch).join(',')}`,
+        );
+      },
+
+      applyItems(items, key) {
+        const s = get();
+        const settled = settle(items);
+        const selectedId = keepSelection(settled, s.selectedId);
+        // A dragged item takes the active vehicle along to wherever it was dropped.
+        const follow = key === undefined ? vehicleOf(s, settled.find((i) => i.id === selectedId)) : null;
+        commit({ items: settled }, { selectedId, activeVehicleId: follow ?? s.activeVehicleId }, key);
+      },
+
+      removeItem(id) {
+        const s = get();
+        const items = settle(s.items.filter((i) => i.id !== id));
+        commit({ items }, { selectedId: s.selectedId === id ? null : s.selectedId });
+      },
+
+      duplicateItem(id) {
+        const s = get();
+        const source = s.items.find((i) => i.id === id);
+        if (!source) return;
+        if (s.limits && s.items.length >= s.limits.items) {
+          refuse('items', s.limits);
+          return;
+        }
+        const { locked: _, ...free } = source;
+        const copy = placeOnDock(
+          { ...free, id: uid('cargo'), seq: s.nextSeq, pos: { ...source.pos } },
+          s.items,
+          layoutOf(s),
+          vehicleOf(s, source) ?? s.activeVehicleId,
+        );
+        const items = settle([...s.items, copy], { yieldIds: new Set([copy.id]) });
+        commit({ items, nextSeq: s.nextSeq + 1 }, { selectedId: copy.id });
+      },
+
+      rotateItem(id, axis = 'y') {
+        const s = get();
+        if (pinnedIds(s.items).has(id)) return;
+        const items = s.items.map((i) => {
+          if (i.id !== id) return i;
+          // About the centre of the footprint; the bottom stays where it was, gravity does the rest.
+          const box = itemBox(i);
+          const orientation = rotate90(i.orientation, axis);
+          const size = effectiveDims(i.dims, orientation);
+          const cx = (box.min.x + box.max.x) / 2;
+          const cz = (box.min.z + box.max.z) / 2;
+          return { ...i, orientation, pos: { x: cx - size.l / 2, y: i.pos.y, z: cz - size.w / 2 } };
+        });
+        commit({ items: settle(items, { yieldIds: new Set([id]) }) });
+      },
+
+      nudgeItem(id, dx, dz) {
+        const s = get();
+        if (!s.items.some((i) => i.id === id) || pinnedIds(s.items).has(id)) return;
+        const layout = layoutOf(s);
+        const session = beginMove(s.items, id, true);
+        const root = session.members[0];
+        const result = evaluateMove(
+          session,
+          { x: root.pos.x + dx, z: root.pos.z + dz },
+          { floors: layout.floors, walls: layout.walls, snapThreshold: 0, preferY: root.pos.y },
+        );
+        commit({ items: finishMove(s.items, session, result.members) }, {}, `nudge:${id}`);
+      },
+
+      shiftLevel(id, dir) {
+        const s = get();
+        if (!s.items.some((i) => i.id === id) || pinnedIds(s.items).has(id)) return;
+        const session = beginMove(s.items, id, true);
+        const root = session.members[0];
+        const target = adjacentLevel(moveLevels(session), root.pos.y, dir);
+        if (target === null) return;
+        const layout = layoutOf(s);
+        const result = evaluateMove(
+          session,
+          { x: root.pos.x, z: root.pos.z },
+          { floors: layout.floors, walls: layout.walls, snapThreshold: 0, preferY: target },
+        );
+        commit({ items: finishMove(s.items, session, result.members) });
+      },
+
+      setLocked(id, locked) {
+        const s = get();
+        const item = s.items.find((i) => i.id === id);
+        if (!item || !!item.locked === locked) return;
+        const { locked: _, ...free } = item;
+        const next: CargoItem = locked ? { ...free, locked: true } : free;
+        commit({ items: s.items.map((i) => (i.id === id ? next : i)) });
+      },
+
+      clearItems() {
+        if (get().items.length === 0) return;
+        commit({ items: [] }, { selectedId: null });
+      },
+
+      select(id) {
+        const s = get();
+        const activeVehicleId = vehicleOf(s, s.items.find((i) => i.id === id)) ?? s.activeVehicleId;
+        if (s.selectedId !== id || s.activeVehicleId !== activeVehicleId) set({ selectedId: id, activeVehicleId });
+      },
+
+      updateBody(id, dims) {
+        const s = get();
+        const vehicles = mapBody(s.vehicles, id, (b) => ({ ...b, dims: clampBodyDims(dims) }));
+        commit(withVehicles(s, vehicles), {}, `body:${id}`);
+      },
+
+      setBodyMaxLoad(id, maxLoad) {
+        const s = get();
+        const vehicles = mapBody(s.vehicles, id, (b) => {
+          const { maxLoad: _, ...rest } = b;
+          return maxLoad === undefined
+            ? rest
+            : { ...rest, maxLoad: Math.min(BODY_MAX_LOAD_LIMIT, Math.max(0, Math.round(maxLoad))) };
+        });
+        commit({ vehicles }, {}, `body-load:${id}`);
+      },
+
+      addTrailer(vehicleId) {
+        const s = get();
+        const target = s.vehicles.find((v) => v.id === (vehicleId ?? s.activeVehicleId));
+        if (!target || target.bodies.length >= MAX_BODIES) return;
+        const last = target.bodies[target.bodies.length - 1];
+        const trailer = makeBody({
+          ...DEFAULT_TRAILER,
+          dims: { ...DEFAULT_TRAILER.dims, w: last.dims.w, h: last.dims.h },
+        });
+        commit(setBodies(s, target.id, (bodies) => [...bodies, trailer]), { activeVehicleId: target.id });
+      },
+
+      removeBody(id) {
+        const s = get();
+        const owner = s.vehicles.find((v) => v.bodies.some((b) => b.id === id));
+        if (!owner || owner.bodies.length <= 1) return;
+        commit(withVehicles(s, mapBody(s.vehicles, id, () => null), s.dockMode, owner.id));
+      },
+
+      applyVehiclePreset(presetId, vehicleId) {
+        const s = get();
+        const preset = VEHICLE_PRESETS.find((p) => p.id === presetId);
+        const target = s.vehicles.find((v) => v.id === (vehicleId ?? s.activeVehicleId));
+        if (!preset || !target) return;
+        // Reuse body ids by position so cargo stays in "the first body", "the second body"...
+        commit(
+          setBodies(s, target.id, (bodies) => preset.bodies.map((t, i) => makeBody(t, bodies[i]?.id))),
+          { activeVehicleId: target.id },
+        );
+      },
+
+      addVehicle(presetId) {
+        const s = get();
+        if (s.vehicles.length >= MAX_VEHICLES) return null;
+        if (s.limits && s.vehicles.length >= s.limits.vehicles) {
+          refuse('vehicles', s.limits);
+          return null;
+        }
+        const preset = VEHICLE_PRESETS.find((p) => p.id === presetId) ?? VEHICLE_PRESETS[0];
+        const vehicle: Vehicle = {
+          id: uid('veh'),
+          name: nextVehicleName(s.vehicles),
+          bodies: preset.bodies.map((b) => makeBody(b)),
+        };
+        commit(withVehicles(s, [...s.vehicles, vehicle]), { activeVehicleId: vehicle.id });
+        return vehicle.id;
+      },
+
+      removeVehicle(id) {
+        const s = get();
+        const index = s.vehicles.findIndex((v) => v.id === id);
+        if (index < 0 || s.vehicles.length <= 1) return;
+        const vehicles = s.vehicles.filter((v) => v.id !== id);
+        const active = s.activeVehicleId === id ? vehicles[Math.max(0, index - 1)].id : s.activeVehicleId;
+        commit(withVehicles(s, vehicles, s.dockMode, active), { activeVehicleId: active });
+      },
+
+      renameVehicle(id, name) {
+        const s = get();
+        const clean = name.trim().slice(0, 100);
+        if (!clean) return;
+        const vehicles = s.vehicles.map((v) => (v.id === id && v.name !== clean ? { ...v, name: clean } : v));
+        if (vehicles.every((v, i) => v === s.vehicles[i])) return;
+        commit({ vehicles }, {}, `vehicle-name:${id}`);
+      },
+
+      setDockMode(mode) {
+        const s = get();
+        if (s.dockMode === mode) return;
+        commit(withVehicles(s, s.vehicles, mode));
+      },
+
+      setActiveVehicle(id) {
+        const s = get();
+        if (s.activeVehicleId !== id && s.vehicles.some((v) => v.id === id)) set({ activeVehicleId: id });
+      },
+
+      setSetting(key, value) {
+        set({ settings: { ...get().settings, [key]: value } });
+      },
+
+      replaceSettings(settings) {
+        set({ settings });
+      },
+
+      setLimits(limits) {
+        set({ limits });
+      },
+
+      undo() {
+        const s = get();
+        const prev = s.history.past[s.history.past.length - 1];
+        if (!prev) return;
+        set({
+          ...prev,
+          selectedId: keepSelection(prev.items, s.selectedId),
+          activeVehicleId: keepActive(prev.vehicles, s.activeVehicleId),
+          history: {
+            past: s.history.past.slice(0, -1),
+            future: [pickPlan(s), ...s.history.future],
+            lastKey: null,
+            lastAt: 0,
+          },
+        });
+      },
+
+      redo() {
+        const s = get();
+        const next = s.history.future[0];
+        if (!next) return;
+        set({
+          ...next,
+          selectedId: keepSelection(next.items, s.selectedId),
+          activeVehicleId: keepActive(next.vehicles, s.activeVehicleId),
+          history: {
+            past: [...s.history.past, pickPlan(s)],
+            future: s.history.future.slice(1),
+            lastKey: null,
+            lastAt: 0,
+          },
+        });
+      },
+
+      loadPlan(raw) {
+        const plan = parsePlan(raw);
+        if (!plan) throw new Error('Файл не похож на план загрузки');
+        const { limits } = get();
+        if (limits && (plan.vehicles.length > limits.vehicles || plan.items.length > limits.items)) {
+          throw new Error(
+            `План не помещается в тариф «${limits.tierName}» (машин — до ${limits.vehicles}, грузов — до ${limits.items}). Смените тариф, чтобы загрузить его.`,
+          );
+        }
+        const items = settle(plan.items);
+        const nextSeq = Math.max(plan.nextSeq || 1, ...items.map((i) => i.seq + 1));
+        commit(
+          { vehicles: plan.vehicles, dockMode: plan.dockMode, items, nextSeq },
+          { selectedId: null, activeVehicleId: plan.vehicles[0].id },
+        );
+      },
+
+      openPlan(raw) {
+        const plan = parsePlan(raw);
+        if (!plan) throw new Error('Схема повреждена');
+        const items = settle(plan.items);
+        set({
+          vehicles: plan.vehicles,
+          dockMode: plan.dockMode,
+          items,
+          nextSeq: Math.max(plan.nextSeq || 1, ...items.map((i) => i.seq + 1)),
+          paletteIndex: items.length,
+          selectedId: null,
+          activeVehicleId: plan.vehicles[0].id,
+          history: { past: [], future: [], lastKey: null, lastAt: 0 },
+        });
+      },
+    };
+  },
 );
 
 /** localStorage key of the plan saved by the app before accounts existed. */

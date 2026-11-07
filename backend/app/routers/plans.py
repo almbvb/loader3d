@@ -9,10 +9,12 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.auth import CurrentAuth
 from app.db import Db
+from app.deps import SettingsDep
 from app.errors import ApiError, not_found
-from app.models import Plan
+from app.models import Plan, User, utcnow
 from app.schemas.plan_data import PlanData, default_plan_data
 from app.schemas.plans import PlanCreate, PlanDuplicate, PlanOut, PlanPage, PlanSort, PlanSummary, PlanUpdate
+from app.tiers import TIER_NAMES, effective_tier, tier_limits
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -36,6 +38,42 @@ def _set_data(plan: Plan, data: PlanData) -> None:
     plan.vehicle_count = len(data.vehicles)
     plan.body_count = data.body_count
     plan.item_count = len(data.items)
+
+
+def _tier_limit(user: User, code: str, what: str, limit: int, nouns: tuple[str, str]) -> ApiError:
+    """403 with `limit`: «На тарифе «Старт» в схеме не больше 1 машины…» (genitive after «больше»)."""
+    tier = TIER_NAMES[effective_tier(user, utcnow())]
+    noun = nouns[0] if limit % 10 == 1 and limit % 100 != 11 else nouns[1]
+    return ApiError(
+        status.HTTP_403_FORBIDDEN,
+        code,
+        f"На тарифе «{tier}» {what} не больше {limit} {noun}. Чтобы снять ограничение, смените тариф.",
+        limit=limit,
+    )
+
+
+async def _check_plan_count(db: Db, user: User, tiers_enabled: bool) -> None:
+    if not tiers_enabled:
+        return
+    limit = tier_limits(user, utcnow()).plans
+    if limit is None:
+        return
+    count = await db.scalar(select(func.count()).select_from(Plan).where(Plan.owner_id == user.id)) or 0
+    if count >= limit:
+        raise _tier_limit(user, "plan_limit", "можно сохранить", limit, ("схемы", "схем"))
+
+
+def _check_contents(user: User, tiers_enabled: bool, data: PlanData, previous: Plan | None = None) -> None:
+    """Vehicles and items within the tier. A plan already over the limit (the tier ended) can still be
+    edited, it just cannot grow."""
+    if not tiers_enabled:
+        return
+    limits = tier_limits(user, utcnow())
+    vehicles, items = len(data.vehicles), len(data.items)
+    if vehicles > limits.vehicles and vehicles > (previous.vehicle_count if previous else 0):
+        raise _tier_limit(user, "vehicle_limit", "в схеме", limits.vehicles, ("машины", "машин"))
+    if items > limits.items and items > (previous.item_count if previous else 0):
+        raise _tier_limit(user, "item_limit", "в схеме", limits.items, ("груза", "грузов"))
 
 
 def _version_conflict(current_version: int) -> ApiError:
@@ -85,10 +123,13 @@ async def list_plans(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_plan(body: PlanCreate, auth: CurrentAuth, db: Db) -> PlanOut:
+async def create_plan(body: PlanCreate, auth: CurrentAuth, db: Db, settings: SettingsDep) -> PlanOut:
+    await _check_plan_count(db, auth.user, settings.tiers_enabled)
+    data = body.data or default_plan_data()
+    _check_contents(auth.user, settings.tiers_enabled, data)
     plan = Plan(owner_id=auth.user.id)
     _set_name(plan, body.name)
-    _set_data(plan, body.data or default_plan_data())
+    _set_data(plan, data)
     db.add(plan)
     await db.commit()
     return PlanOut.model_validate(plan)
@@ -100,7 +141,9 @@ async def get_plan(plan_id: uuid.UUID, auth: CurrentAuth, db: Db) -> PlanOut:
 
 
 @router.patch("/{plan_id}")
-async def update_plan(plan_id: uuid.UUID, body: PlanUpdate, auth: CurrentAuth, db: Db) -> PlanOut:
+async def update_plan(
+    plan_id: uuid.UUID, body: PlanUpdate, auth: CurrentAuth, db: Db, settings: SettingsDep
+) -> PlanOut:
     """Saves a new name and/or contents. 409 `version_conflict` if the plan changed since `version`."""
     plan = await _get_own_plan(db, auth, plan_id)
     if body.version != plan.version:
@@ -108,6 +151,7 @@ async def update_plan(plan_id: uuid.UUID, body: PlanUpdate, auth: CurrentAuth, d
     if body.name is not None:
         _set_name(plan, body.name)
     if body.data is not None:
+        _check_contents(auth.user, settings.tiers_enabled, body.data, plan)
         _set_data(plan, body.data)
     try:
         await db.commit()
@@ -122,8 +166,11 @@ async def update_plan(plan_id: uuid.UUID, body: PlanUpdate, auth: CurrentAuth, d
 
 
 @router.post("/{plan_id}/duplicate", status_code=status.HTTP_201_CREATED)
-async def duplicate_plan(plan_id: uuid.UUID, body: PlanDuplicate, auth: CurrentAuth, db: Db) -> PlanOut:
+async def duplicate_plan(
+    plan_id: uuid.UUID, body: PlanDuplicate, auth: CurrentAuth, db: Db, settings: SettingsDep
+) -> PlanOut:
     source = await _get_own_plan(db, auth, plan_id)
+    await _check_plan_count(db, auth.user, settings.tiers_enabled)
     plan = Plan(
         owner_id=auth.user.id,
         data=copy.deepcopy(source.data),

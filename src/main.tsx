@@ -7,6 +7,7 @@ import { App } from './App';
 import { Toaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
 import { useAuth } from './store/useAuth';
+import './store/accountSync';
 import './index.css';
 
 const queryClient = new QueryClient({

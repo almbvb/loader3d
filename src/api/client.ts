@@ -42,7 +42,7 @@ export function onRefreshed(handler: (auth: AuthResponse) => void): void {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   query?: Record<string, string | number | undefined>;
   /** Send the access token and refresh it on 401 (false for login, register...). */
@@ -152,7 +152,10 @@ async function toApiError(response: Response): Promise<ApiError> {
 }
 
 function validationMessage(field: string, issue: ValidationIssue): string {
+  // Validators of the backend already speak Russian ("Value error, Укажите email или телефон").
+  if (issue.type === 'value_error' && /[а-яё]/i.test(issue.msg)) return issue.msg.replace(/^Value error, /, '');
   if (field === 'email') return 'Введите корректный email';
+  if (field === 'phone') return 'Введите номер телефона';
   if (field === 'password' || field === 'newPassword') {
     return issue.type === 'string_too_short' ? 'Не короче 8 символов' : 'Не длиннее 128 символов';
   }

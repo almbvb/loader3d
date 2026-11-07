@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, Request, Response
+from fastapi import Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db import Db
 from app.deps import SettingsDep
-from app.errors import unauthorized
+from app.errors import ApiError, unauthorized
 from app.models import AuthSession, User, utcnow
 from app.security import InvalidTokenError, decode_token, encode_token, new_jti
 
@@ -278,3 +278,29 @@ async def get_auth(
 
 
 CurrentAuth = Annotated[AuthContext, Depends(get_auth)]
+
+
+async def get_optional_auth(
+    db: Db,
+    settings: SettingsDep,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> AuthContext | None:
+    """The logged-in user on public endpoints (a request from the landing page or the account)."""
+    if credentials is None:
+        return None
+    try:
+        return await get_auth(db, settings, credentials)
+    except ApiError:
+        return None
+
+
+OptionalAuth = Annotated[AuthContext | None, Depends(get_optional_auth)]
+
+
+async def get_admin(auth: CurrentAuth) -> AuthContext:
+    if not auth.user.is_admin:
+        raise ApiError(status.HTTP_403_FORBIDDEN, "forbidden", "Нужны права администратора")
+    return auth
+
+
+AdminAuth = Annotated[AuthContext, Depends(get_admin)]

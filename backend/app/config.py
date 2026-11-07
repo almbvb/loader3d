@@ -7,6 +7,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+# The repository root: its .env (the deployment settings, .env.example) is read in development too, so
+# one TIERS_ENABLED switches the frontend build and the API alike. backend/.env overrides it.
+ROOT_DIR = BACKEND_DIR.parent
 
 # Used only when ENVIRONMENT=development and JWT_SECRET is not set; production refuses to start with it.
 DEV_JWT_SECRET = "loader3d-development-secret-do-not-use-in-production"
@@ -16,7 +19,7 @@ class Settings(BaseSettings):
     """Runtime configuration from environment variables (and backend/.env in development)."""
 
     model_config = SettingsConfigDict(
-        env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=(ROOT_DIR / ".env", BACKEND_DIR / ".env"), env_file_encoding="utf-8", extra="ignore"
     )
 
     environment: Literal["development", "production"] = "development"
@@ -31,6 +34,8 @@ class Settings(BaseSettings):
     refresh_token_ttl_days: int = Field(30, ge=1, le=365)
 
     registration_open: bool = True
+    # Subscription tiers (app/tiers.py). Off: no limits, and neither the API nor the site mention tiers.
+    tiers_enabled: bool = False
     # Comma-separated origins allowed to call the API cross-origin.
     # Empty: same-origin only, which is how Caddy (production) and the Vite proxy (development) serve it.
     cors_origins: Annotated[list[str], NoDecode] = []

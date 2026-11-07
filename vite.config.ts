@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -7,8 +8,13 @@ import tailwindcss from '@tailwindcss/vite';
 // no CORS, and the refresh-token cookie is first-party.
 const apiProxy = { '/api': 'http://127.0.0.1:8000' };
 
-export default defineConfig({
+// TIERS_ENABLED from the repository's .env (or the environment, e.g. the Docker build arg): the same
+// switch the API reads. Built in, because the landing page is prerendered with or without the tariffs.
+const tiersEnabled = (mode: string) => loadEnv(mode, process.cwd(), '').TIERS_ENABLED?.trim().toLowerCase() === 'true';
+
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
+  define: { __TIERS_ENABLED__: JSON.stringify(tiersEnabled(mode)) },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
@@ -33,4 +39,4 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts'],
   },
-});
+}));

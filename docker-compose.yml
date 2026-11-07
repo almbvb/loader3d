@@ -21,6 +21,8 @@ services:
       args:
         NODE_VERSION: ${NODE_VERSION:-24}
         CADDY_VERSION: ${CADDY_VERSION:-2}
+        # Tariffs in the app (built into the frontend); the api reads it too.
+        TIERS_ENABLED: ${TIERS_ENABLED:-false}
     restart: unless-stopped
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
@@ -50,6 +52,7 @@ services:
       ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
       REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
       REGISTRATION_OPEN: ${REGISTRATION_OPEN:-true}
+      TIERS_ENABLED: ${TIERS_ENABLED:-false}
     depends_on:
       db:
         condition: service_healthy

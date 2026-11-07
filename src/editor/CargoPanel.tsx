@@ -42,7 +42,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { plural } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { NumberField, Stepper, WeightField } from './fields';
-import { usePinned, usePlacements, useStats, useUnits } from './hooks';
+import { ProBadge } from '@/components/UpgradeDialog';
+import { useFeature, useOpenAutoload, usePinned, usePlacements, useStats, useUnits } from './hooks';
 
 const ITEMS = ['груз', 'груза', 'грузов'] as const;
 
@@ -188,21 +189,25 @@ function AutoloadCard() {
   const stats = useStats();
   const activeId = useStore((s) => s.activeVehicleId);
   const many = useStore((s) => s.vehicles.length > 1);
-  const setAutoloadOpen = useUi((s) => s.setAutoloadOpen);
+  const openAutoload = useOpenAutoload();
+  const locked = !useFeature('autoload');
   const dock = stats.vehicles.find((v) => v.id === activeId) ?? { dock: stats.dock, dockWeight: stats.dockWeight };
   if (dock.dock === 0) return null;
   return (
     <div className="border-b p-3">
       <button
         type="button"
-        onClick={() => setAutoloadOpen(true)}
+        onClick={openAutoload}
         className="group/auto flex w-full items-center gap-3 rounded-xl border border-primary/25 bg-primary/5 p-2.5 text-left transition-colors outline-none hover:bg-primary/10 focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm shadow-primary/30">
           <WandSparkles className="size-[18px]" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">{many ? 'Загрузить в машину' : 'Загрузить в кузов'}</span>
+          <span className="flex items-center gap-1.5 text-sm font-semibold">
+            {many ? 'Загрузить в машину' : 'Загрузить в кузов'}
+            {locked && <ProBadge />}
+          </span>
           <span className="block truncate text-xs text-muted-foreground">
             На доке {plural(dock.dock, ITEMS)}
             {dock.dockWeight > 0 && ` · ${formatWeight(dock.dockWeight)}`} — разложим автоматически
@@ -218,7 +223,7 @@ function CargoList() {
   const items = useStore((s) => s.items);
   const selectedId = useStore((s) => s.selectedId);
   const clearItems = useStore((s) => s.clearItems);
-  const setAutoloadOpen = useUi((s) => s.setAutoloadOpen);
+  const openAutoload = useOpenAutoload();
   const placements = usePlacements();
 
   return (
@@ -230,7 +235,7 @@ function CargoList() {
           <div className="ml-auto flex items-center">
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => setAutoloadOpen(true)} aria-label="Автозагрузка">
+                <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={openAutoload} aria-label="Автозагрузка">
                   <WandSparkles />
                 </Button>
               </TooltipTrigger>
