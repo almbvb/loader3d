@@ -7,8 +7,8 @@ import { effectiveDims, intrinsicDims, rotate90 } from './orientation';
 import { parsePlan, relayout, vehiclePlan } from './plan';
 import { layoutOf, vehicle } from './testing';
 import { findOccluders, segmentHitsBox } from './xray';
-import { collectStack, findCollisions, findFloating, settle } from './physics';
-import { beginMove, evaluateMove, finishMove } from './move';
+import { collectStack, findCollisions, findFloating, pinnedIds, restingLevels, settle } from './physics';
+import { beginMove, evaluateMove, finishMove, verticalOptions } from './move';
 import { snapFootprint } from './snapping';
 import { resizeBox } from './resize';
 import { dockSpot, findFreeSpot } from './spawn';
@@ -73,6 +73,20 @@ describe('settle (gravity)', () => {
   });
 });
 
+describe('fixed cargo', () => {
+  it('pins a locked item and everything it stands on, nothing else', () => {
+    const items = [
+      item({}, { x: 0, z: 0 }, 'base'),
+      item({}, { x: 0, y: 100, z: 0 }, 'mid'),
+      { ...item({ h: 50 }, { x: 0, y: 200, z: 0 }, 'top'), locked: true },
+      item({}, { x: 200, z: 0 }, 'other'),
+      item({ h: 30 }, { x: 0, y: 250, z: 0 }, 'above'),
+    ];
+    expect([...pinnedIds(items)].sort()).toEqual(['base', 'mid', 'top']);
+    expect(pinnedIds(items.map(({ locked: _, ...i }) => i)).size).toBe(0);
+  });
+});
+
 describe('collectStack', () => {
   it('collects items resting only on the picked one', () => {
     const items = [
@@ -126,6 +140,61 @@ describe('move', () => {
     const r = evaluateMove(s, { x: 600, z: 26 }, { ...ctx, snapThreshold: 8 });
     expect(r.rootPos.z).toBeCloseTo(122.5 - 100);
     expect(r.guides[0].kind).toBe('wall');
+  });
+
+  describe('under a "bridge"', () => {
+    // Two stacks 100 high with a plank across them: a 100 × 100 × 100 gap under the plank.
+    const bridge = () => [
+      item({}, { x: 0, z: 0 }, 'left'),
+      item({}, { x: 200, z: 0 }, 'right'),
+      item({ l: 300, h: 20 }, { x: 0, y: 100, z: 0 }, 'plank'),
+      item({ h: 80 }, { x: 600, z: 0 }, 'box'),
+    ];
+
+    it('slides cargo under it along the floor and drops it there', () => {
+      const items = bridge();
+      const s = beginMove(items, 'box');
+      const r = evaluateMove(s, { x: 100, z: 0 }, { ...ctx, preferY: 0 });
+      expect(r.rootPos.y).toBe(0);
+      expect(r.levels).toEqual([0, 120]);
+      const out = finishMove(items, s, r.members);
+      expect(out.find((i) => i.id === 'box')!.pos.y).toBe(0);
+      expect(out.find((i) => i.id === 'plank')!.pos.y).toBe(100);
+      expect(findCollisions(out)).toEqual([]);
+      expect(findFloating(out)).toEqual([]);
+    });
+
+    it('goes on top of it by default and when coming from above', () => {
+      const items = bridge();
+      const s = beginMove(items, 'box');
+      expect(evaluateMove(s, { x: 100, z: 0 }, ctx).rootPos.y).toBe(120);
+      expect(evaluateMove(s, { x: 100, z: 0 }, { ...ctx, preferY: 100 }).rootPos.y).toBe(120);
+    });
+
+    it('does not slide under it what does not fit', () => {
+      const items = [...bridge().slice(0, 3), item({ h: 101 }, { x: 600, z: 0 }, 'tall')];
+      const s = beginMove(items, 'tall');
+      const r = evaluateMove(s, { x: 100, z: 0 }, { ...ctx, preferY: 0 });
+      expect(r.levels).toEqual([120]);
+      expect(r.rootPos.y).toBe(120);
+    });
+
+    it('offers to move an item up from under it and back down', () => {
+      const under = bridge().map((i) => (i.id === 'box' ? { ...i, pos: { x: 100, y: 0, z: 0 } } : i));
+      expect(verticalOptions(under, 'box')).toEqual({ up: 120, down: null });
+      const onTop = settle(under.map((i) => (i.id === 'box' ? { ...i, pos: { x: 100, y: 120, z: 0 } } : i)));
+      expect(verticalOptions(onTop, 'box')).toEqual({ up: null, down: 0 });
+      // A support of the plank can be put on top too: the plank stays on the other one.
+      expect(verticalOptions(onTop, 'left')).toEqual({ up: 120, down: null });
+      expect(verticalOptions(onTop, 'plank')).toEqual({ up: null, down: null });
+    });
+
+    it('finds the levels of a rigid group', () => {
+      const members: Box[] = [boxAt({ x: 100, y: 0, z: 0 }, { l: 100, w: 100, h: 50 }), boxAt({ x: 100, y: 50, z: 0 }, { l: 100, w: 100, h: 40 })];
+      const obstacles = bridge().slice(0, 3).map(itemBox);
+      expect(restingLevels(members, obstacles)).toEqual([0, 120]);
+      expect(restingLevels(members.map((m) => ({ ...m, max: { ...m.max, y: m.max.y + 20 } })), obstacles)).toEqual([120]);
+    });
   });
 
   it('keeps the group centre over a floor', () => {

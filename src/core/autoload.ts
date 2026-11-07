@@ -2,7 +2,7 @@ import type { Box, CargoItem, Yaw } from './types';
 import { itemBox, itemSize, itemWeight } from './item';
 import { dockIndexAt, type PlacedBody, type VehicleLayout } from './layout';
 import { floorDims } from './orientation';
-import { settle } from './physics';
+import { pinnedIds, settle } from './physics';
 import { dockSpot } from './spawn';
 import { COG_LONG_TOLERANCE, centreOfGravity, classify, isBalanced } from './stats';
 
@@ -22,8 +22,9 @@ import { COG_LONG_TOLERANCE, centreOfGravity, classify, isBalanced } from './sta
  * 5. The payload capacity of a body is never exceeded; what does not fit stays on the dock.
  *
  * Items keep the side they stand on (tilting is the user's call): only the turn about the
- * vertical is chosen. Several vehicles are filled one after another, each from its own dock or
- * all from the shared one. The result always goes through settle(): no intersections, nothing floating.
+ * vertical is chosen. Locked cargo (and what it stands on, see pinnedIds) is never moved: in a body it
+ * stays like cargo that is not repacked, on the dock it is not loaded. Several vehicles are filled one
+ * after another, each from its own dock or all from the shared one. The result always goes through settle(): no intersections, nothing floating.
  */
 
 export interface AutoloadOptions {
@@ -400,10 +401,12 @@ export function autoload(
     return { item, weight: itemWeight(item), h: itemSize(item).h, area: a * b };
   };
 
+  const pinned = pinnedIds(items);
   for (const item of items) {
     const box = itemBox(item);
     const placement = classify(box, layout);
     if (placement.status === 'dock') {
+      if (pinned.has(item.id)) continue;
       const dock = dockIndexAt(box, layout);
       if (!docks.has(dock)) continue;
       wasOnDock.add(item.id);
@@ -413,7 +416,7 @@ export function autoload(
     // Cargo of vehicles that are not loaded now stays where it is.
     const plan = plans.find((p) => p.pb === placement.body);
     if (!plan) continue;
-    if (repackAll) {
+    if (repackAll && !pinned.has(item.id)) {
       takenFrom.set(item.id, plan.pb.vehicleId);
       addCandidate(source(plan.pb.vehicleId), candidate(item));
       continue;

@@ -25,6 +25,8 @@ interface ItemVisual {
   /** X-ray: shown opacity and the one it is easing towards. */
   alpha: number;
   targetAlpha: number;
+  /** Shadow of a faded item (see fadedShadowMaterial), made on the first fade. */
+  shadow: { material: THREE.MeshDepthMaterial; opacity: { value: number } } | null;
 }
 
 /** Time constant of the x-ray fade, ms. */
@@ -34,27 +36,56 @@ const SEE_THROUGH = 0.75;
 
 const labelTextures = new Map<string, THREE.CanvasTexture>();
 
-function labelTexture(text: string): THREE.CanvasTexture {
-  let texture = labelTextures.get(text);
+/** The number on the top face; a fixed item gets a dark disc with a padlock under the number. */
+function labelTexture(text: string, locked: boolean): THREE.CanvasTexture {
+  const key = locked ? `${text}|locked` : text;
+  let texture = labelTextures.get(key);
   if (texture) return texture;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.fillStyle = locked ? 'rgba(27, 35, 48, 0.92)' : 'rgba(255, 255, 255, 0.9)';
   ctx.beginPath();
   ctx.arc(64, 64, 60, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#1b2330';
-  ctx.font = `700 ${text.length > 2 ? 50 : 64}px Inter, system-ui, sans-serif`;
+  ctx.fillStyle = locked ? '#ffffff' : '#1b2330';
+  ctx.font = `700 ${text.length > 2 ? (locked ? 40 : 50) : locked ? 50 : 64}px Inter, system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, 64, 68);
+  ctx.fillText(text, 64, locked ? 52 : 68);
+  if (locked) {
+    ctx.fillRect(53, 86, 22, 16);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(64, 86, 7, Math.PI, 0);
+    ctx.stroke();
+  }
   texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
   texture.userData.shared = true;
-  labelTextures.set(text, texture);
+  labelTextures.set(key, texture);
   return texture;
+}
+
+/**
+ * Shadow of a see-through item: hashed alpha in the shadow map lets through a share of the light equal
+ * to its transparency, so the shadow pales and comes back smoothly with the fade instead of popping.
+ * (The depth material ignores `opacity` with RGBA packing: it gets a uniform of its own.)
+ */
+function fadedShadowMaterial(): { material: THREE.MeshDepthMaterial; opacity: { value: number } } {
+  const opacity = { value: 1 };
+  const material = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, alphaHash: true });
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.fadeOpacity = opacity;
+    shader.fragmentShader = `uniform float fadeOpacity;\n${shader.fragmentShader.replace(
+      '#include <alphahash_fragment>',
+      'diffuseColor.a = fadeOpacity;\n#include <alphahash_fragment>',
+    )}`;
+  };
+  material.customProgramCacheKey = () => 'cargo-faded-shadow';
+  return { material, opacity };
 }
 
 function edgeColor(color: string): THREE.Color {
@@ -62,8 +93,9 @@ function edgeColor(color: string): THREE.Color {
 }
 
 /**
- * Cargo boxes: one mesh + edges + top-face number per item, plus red overflow volumes.
- * Any item can be faded out (x-ray) — the fill turns translucent, the outline stays readable.
+ * Cargo boxes: one mesh + edges + top-face number per item (with a padlock when fixed), plus red overflow
+ * volumes. Any item can be faded out (x-ray) — the fill turns translucent, the outline stays readable and
+ * the shadow pales along.
  */
 export class CargoView {
   readonly root = new THREE.Group();
@@ -223,6 +255,7 @@ export class CargoView {
       color: item.color,
       alpha: 1,
       targetAlpha: 1,
+      shadow: null,
     };
     this.visuals.set(item.id, visual);
     this.pickList = null;
@@ -231,6 +264,7 @@ export class CargoView {
 
   private destroy(id: string, v: ItemVisual): void {
     disposeTree(v.group);
+    v.shadow?.material.dispose();
     this.root.remove(v.group, v.overflow);
     this.visuals.delete(id);
     this.pickList = null;
@@ -246,9 +280,10 @@ export class CargoView {
       fill.transparent = edges.transparent = faded;
       fill.depthWrite = edges.depthWrite = !faded;
       fill.needsUpdate = edges.needsUpdate = true;
-      // A ghost casts no shadow on the cargo it lets you see.
-      v.mesh.castShadow = !faded;
+      if (faded) v.shadow ??= fadedShadowMaterial();
+      v.mesh.customDepthMaterial = faded ? v.shadow!.material : undefined;
     }
+    if (v.shadow) v.shadow.opacity.value = a;
     fill.opacity = a;
     edges.opacity = faded ? 0.3 + 0.7 * a : 1;
     if (v.label) v.label.material.opacity = Math.min(1, a * 1.6);
@@ -277,9 +312,9 @@ export class CargoView {
       v.group.add(v.label);
       this.applyAlpha(v);
     }
-    const text = String(item.seq);
+    const text = item.locked ? `${item.seq}|locked` : String(item.seq);
     if (v.labelText !== text) {
-      v.label.material.map = labelTexture(text);
+      v.label.material.map = labelTexture(String(item.seq), !!item.locked);
       v.label.material.needsUpdate = true;
       v.labelText = text;
     }

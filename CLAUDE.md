@@ -34,7 +34,13 @@ Architecture, controls, API endpoints and extension points are in README.md — 
 ## Invariants (do not break)
 
 - Cargo never floats and never intersects: every mutation of items ends with `settle()` (`core/physics.ts`);
-  drag/resize previews compute heights via `supportHeight` / `groupBaseY`, the user never sets Y.
+  drag/resize previews compute heights via `supportHeight` / `restingLevels`, the user never sets Y freely.
+  A dragged group keeps the level closest to the one it had (`MoveContext.preferY`), so it slides under a
+  "bridge" it fits under; PgUp/PgDn and the level buttons of `SelectionView` pick another resting level.
+- Fixed cargo (`CargoItem.locked`) and what it stands on (`pinnedIds()`, `core/physics.ts`) is never moved,
+  turned or resized: the store refuses it, the scene does not start a tool on it (`SceneEngine.isMovable`,
+  also false in the `lockCargo` view mode), autoload leaves it in place. New edit actions must check it.
+  `locked` is part of the plan: `backend/app/schemas/plan_data.py` knows it.
 - `src/core` is pure logic (no three.js, no React) and covered by `core.test.ts` / `autoload.test.ts`; add
   tests there for new rules.
 - Autoload (`core/autoload.ts`) only moves cargo from the dock (or everything with `repackAll`) of the chosen

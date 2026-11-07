@@ -230,7 +230,15 @@ const UNITS: Array<{ value: Units; label: string }> = [
   { value: 'm', label: 'Метры' },
 ];
 
-type Toggle = 'showDimensions' | 'showLabels' | 'highlightOverflow' | 'snapping' | 'resizeHandles' | 'allowTilt';
+type Toggle =
+  | 'showDimensions'
+  | 'showLabels'
+  | 'showBodyWalls'
+  | 'highlightOverflow'
+  | 'snapping'
+  | 'resizeHandles'
+  | 'lockCargo'
+  | 'allowTilt';
 
 const keepOpen = (e: Event) => e.preventDefault();
 
@@ -257,6 +265,7 @@ function DisplayItems() {
       <DropdownMenuLabel>Отображение</DropdownMenuLabel>
       {toggle('showDimensions', 'Размерные линии')}
       {toggle('showLabels', 'Номера на грузах')}
+      {toggle('showBodyWalls', 'Стенки кузова')}
       {toggle(
         'highlightOverflow',
         'Подсвечивать выходы за грани',
@@ -277,6 +286,7 @@ function DisplayItems() {
       </DropdownMenuRadioGroup>
       <DropdownMenuSeparator />
       <DropdownMenuLabel>Перемещение</DropdownMenuLabel>
+      {toggle('lockCargo', 'Фиксация грузов (режим просмотра)')}
       {toggle('snapping', 'Магнитная привязка')}
       {toggle('resizeHandles', 'Ручки изменения размера')}
       {toggle('allowTilt', 'Кантование (повороты по X, Y, Z)')}

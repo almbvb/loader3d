@@ -1,7 +1,6 @@
 /*
  * DOM parts of the 3D scene: the canvas host and the CSS2D labels created by src/scene/*.ts
- * (DimensionLine, SelectionView, VehicleView). Carried over unchanged from the previous UI —
- * the scene looks exactly as before. Not Tailwind: the elements are created imperatively.
+ * (DimensionLine, SelectionView, VehicleView). Not Tailwind: the elements are created imperatively.
  */
 
 .viewport-host {
@@ -83,4 +82,58 @@
   border-color: transparent;
   background: #2f6fed;
   color: #fff;
+}
+
+/* Up / down a level on the selected item (under a "bridge" of cargo and back). */
+.level-control {
+  display: flex;
+  gap: 4px;
+  padding-bottom: 10px;
+}
+
+.level-control__button {
+  pointer-events: auto;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px 4px 7px;
+  border: 1px solid rgba(47, 58, 75, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #1d4fc4;
+  font: 600 12px/1.2 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.14);
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.level-control__button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.level-control__button:hover {
+  background: #2f6fed;
+  border-color: transparent;
+  color: #fff;
+}
+
+.level-control__lock,
+.level-control__lock:hover {
+  background: #1b2330;
+  border-color: transparent;
+  color: #fff;
+}
+
+.level-control__lock:hover {
+  background: #2f3a4b;
+}
+
+.level-control__lock--passive,
+.level-control__lock--passive:hover {
+  cursor: default;
+  background: rgba(27, 35, 48, 0.82);
 }

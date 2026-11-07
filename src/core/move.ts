@@ -1,7 +1,7 @@
 import type { Box, CargoItem, Rect, Vec3 } from './types';
 import { EPS, boxCenter, clampToRects, inRects, translateBox, unionBoxes } from './geometry';
 import { itemBox } from './item';
-import { collectStack, groupBaseY, settle } from './physics';
+import { collectStack, restingLevels, settle } from './physics';
 import { snapFootprint, type SnapGuide } from './snapping';
 
 /**
@@ -32,12 +32,61 @@ export interface MoveContext {
   walls: readonly Box[];
   /** Snap distance in world units; 0 disables snapping. */
   snapThreshold: number;
+  /**
+   * Base Y the group tries to keep: of the levels where it fits ({@link restingLevels}) the closest
+   * one is taken, so cargo slides under a "bridge" it fits under. Default: the highest level, on top
+   * of everything under the footprint.
+   */
+  preferY?: number;
 }
 
 export interface MoveResult {
   rootPos: Vec3;
   members: CargoItem[];
   guides: SnapGuide[];
+  /** Base Ys the group could rest at in this spot, ascending (rootPos.y is one of them). */
+  levels: number[];
+}
+
+/** The level of `levels` closest to `y`; the lower one on a tie. */
+function closestLevel(levels: readonly number[], y: number): number {
+  let best = levels[0];
+  for (const l of levels) if (Math.abs(l - y) < Math.abs(best - y) - EPS) best = l;
+  return best;
+}
+
+/** The nearest level above (dir 1) or below (dir −1) `y`, or null. */
+export function adjacentLevel(levels: readonly number[], y: number, dir: 1 | -1): number | null {
+  if (dir > 0) return levels.find((l) => l > y + EPS) ?? null;
+  for (let i = levels.length - 1; i >= 0; i--) if (levels[i] < y - EPS) return levels[i];
+  return null;
+}
+
+/** Levels the group could rest at without moving sideways, ascending. */
+export function moveLevels(s: MoveSession): number[] {
+  const root = s.members[0];
+  return restingLevels(
+    s.relBoxes.map((b) => translateBox(b, root.pos.x, 0, root.pos.z)),
+    s.obstacles,
+  );
+}
+
+export interface VerticalOptions {
+  /** Base Y of the nearest free level above / below the item, null when there is none. */
+  up: number | null;
+  down: number | null;
+}
+
+/**
+ * Where the item (with the stack resting on it) can go straight up or down: e.g. from under a
+ * "bridge" on top of it, or back into the gap under it.
+ */
+export function verticalOptions(items: readonly CargoItem[], id: string): VerticalOptions {
+  if (!items.some((i) => i.id === id)) return { up: null, down: null };
+  const s = beginMove(items, id);
+  const levels = moveLevels(s);
+  const y = s.members[0].pos.y;
+  return { up: adjacentLevel(levels, y, 1), down: adjacentLevel(levels, y, -1) };
 }
 
 export function beginMove(items: readonly CargoItem[], rootId: string, carryStack = true): MoveSession {
@@ -71,11 +120,14 @@ export function evaluateMove(
   target: { x: number; z: number },
   ctx: MoveContext,
 ): MoveResult {
-  const baseYAt = (x: number, z: number) =>
-    groupBaseY(
+  const levelsAt = (x: number, z: number) =>
+    restingLevels(
       s.relBoxes.map((b) => translateBox(b, x, 0, z)),
       s.obstacles,
     );
+  const pick = (levels: number[]) =>
+    ctx.preferY === undefined ? levels[levels.length - 1] : closestLevel(levels, ctx.preferY);
+  const baseYAt = (x: number, z: number) => pick(levelsAt(x, z));
   const centerAt = (x: number, z: number) => boxCenter(translateBox(s.bounds, x, 0, z));
 
   let { x, z } = target;
@@ -115,12 +167,13 @@ export function evaluateMove(
     }
   }
 
-  const y = baseYAt(x, z);
+  const levels = levelsAt(x, z);
+  const y = pick(levels);
   const members = s.members.map((m) => {
     const o = s.offsets.get(m.id)!;
     return { ...m, pos: { x: x + o.x, y: y + o.y, z: z + o.z } };
   });
-  return { rootPos: { x, y, z }, members, guides };
+  return { rootPos: { x, y, z }, members, guides, levels };
 }
 
 /** Full item list (original order) with the session applied — for previews. */
@@ -135,11 +188,14 @@ export function composeMove(
   return items.map((i) => byId.get(i.id) ?? i);
 }
 
-/** Final item list after dropping the group. */
+/**
+ * Final item list after dropping the group. The group already fits where it is (possibly under
+ * other cargo), so plain bottom-up gravity keeps it there.
+ */
 export function finishMove(
   items: readonly CargoItem[],
   s: MoveSession,
   members: readonly CargoItem[],
 ): CargoItem[] {
-  return settle(composeMove(items, s, members), { topIds: s.memberIds });
+  return settle(composeMove(items, s, members));
 }

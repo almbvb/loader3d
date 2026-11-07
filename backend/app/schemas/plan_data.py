@@ -89,6 +89,8 @@ class CargoItem(PlanModel):
     color: Color
     # Gross weight, kg. Optional (older plans); omitted from the JSON when not set.
     weight: Annotated[float | None, Field(ge=0, le=ITEM_WEIGHT_LIMIT, exclude_if=_omit_none)] = None
+    # Fixed in place by the user (src/core/physics.ts pinnedIds); omitted when free.
+    locked: Annotated[bool | None, Field(exclude_if=_omit_none)] = None
 
 
 class PlanData(PlanModel):

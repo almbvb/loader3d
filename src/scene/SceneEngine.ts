@@ -12,6 +12,8 @@ import {
 } from '../core/layout';
 import { itemBox } from '../core/item';
 import { unionBoxes } from '../core/geometry';
+import { verticalOptions } from '../core/move';
+import { pinnedIds } from '../core/physics';
 import type { Face } from '../core/resize';
 import { findOccluders, type XrayEntry } from '../core/xray';
 import { layoutOf, useStore, type AppState } from '../store/useStore';
@@ -64,6 +66,10 @@ export class SceneEngine {
   private xrayCost = 0;
   private xrayAt = 0;
   private owners: { items: readonly CargoItem[]; layout: VehicleLayout; byId: Map<string, string | null> } | null = null;
+  /** Fixed cargo and what it stands on, cached per item list. */
+  private pinned: { items: readonly CargoItem[]; ids: Set<string> } | null = null;
+  /** Level buttons of the selected item, cached per item list. */
+  private levels: { items: readonly CargoItem[]; id: string; up: boolean; down: boolean } | null = null;
   private readonly forward = new THREE.Vector3();
   private readonly projected = new THREE.Vector3();
   private viewportWidth = 1;
@@ -120,6 +126,16 @@ export class SceneEngine {
     this.vehicle.onVehicleClick = (id) => {
       useStore.getState().setActiveVehicle(id);
       this.focusVehicle(id);
+    };
+    this.selection.onUnlock = () => {
+      const { selectedId, setLocked } = useStore.getState();
+      if (selectedId) setLocked(selectedId, false);
+    };
+    this.selection.onLevel = (dir) => {
+      const tool = this.interaction.currentTool;
+      const { selectedId, shiftLevel } = useStore.getState();
+      if (tool?.stepLevel) tool.stepLevel(dir);
+      else if (selectedId) shiftLevel(selectedId, dir);
     };
 
     this.unsubscribe = useStore.subscribe((s, prev) => this.onStoreChange(s, prev));
@@ -213,6 +229,16 @@ export class SceneEngine {
     return this.raycaster.ray.intersectPlane(plane, target);
   }
 
+  /** Whether pressing on the item drags it: not in view mode, not fixed and not holding a fixed item. */
+  isMovable(id: string): boolean {
+    return !useStore.getState().settings.lockCargo && !this.pinnedIds().has(id);
+  }
+
+  /** WASD flight, see {@link CameraRig.fly}. */
+  flyCamera(forward: number, right: number, dt: number, fast: boolean): boolean {
+    return this.rig.fly(forward, right, dt, fast);
+  }
+
   /** World units covered by one screen pixel at `point`. */
   worldPerPixel(point: THREE.Vector3): number {
     const d = this.camera.position.distanceTo(point);
@@ -268,10 +294,12 @@ export class SceneEngine {
 
   private readonly frame = (now: number) => {
     this.framePending = false;
-    const animating = this.rig.update(now);
+    const dt = this.lastFrame ? Math.min(100, now - this.lastFrame) : 16;
+    const flying = this.interaction.fly(dt);
+    const animating = this.rig.update(now) || flying;
     this.camera.updateMatrixWorld();
     this.updateXray();
-    const fading = this.cargo.animate(this.lastFrame ? Math.min(100, now - this.lastFrame) : 16);
+    const fading = this.cargo.animate(dt);
     this.lastFrame = animating || fading ? now : 0;
     this.vehicle.fitLabels(this.camera, this.viewportWidth, this.viewportHeight);
     this.loadLength.fitLabels(this.camera, this.viewportWidth, this.viewportHeight);
@@ -288,7 +316,10 @@ export class SceneEngine {
     const viewChanged = st.units !== pt.units || st.showDimensions !== pt.showDimensions;
 
     if (bodiesChanged || viewChanged) this.rebuildVehicle();
-    else if (s.activeVehicleId !== prev.activeVehicleId) this.vehicle.setActive(s.activeVehicleId);
+    else {
+      if (s.activeVehicleId !== prev.activeVehicleId) this.vehicle.setActive(s.activeVehicleId);
+      if (st.showBodyWalls !== pt.showBodyWalls) this.vehicle.setWallsVisible(st.showBodyWalls);
+    }
     if (
       bodiesChanged ||
       s.items !== prev.items ||
@@ -303,7 +334,8 @@ export class SceneEngine {
       viewChanged ||
       s.items !== prev.items ||
       s.selectedId !== prev.selectedId ||
-      st.resizeHandles !== pt.resizeHandles
+      st.resizeHandles !== pt.resizeHandles ||
+      st.lockCargo !== pt.lockCargo
     ) {
       this.syncSelection();
     }
@@ -323,6 +355,7 @@ export class SceneEngine {
     this.vehicle.build(layout, {
       units: s.settings.units,
       showDimensions: s.settings.showDimensions,
+      showWalls: s.settings.showBodyWalls,
       activeVehicleId: s.activeVehicleId,
     });
     this.updateShadowCamera(layout);
@@ -418,9 +451,29 @@ export class SceneEngine {
     this.selection.update(item, {
       units: s.settings.units,
       showDimensions: s.settings.showDimensions,
-      handles: s.settings.resizeHandles && this.interaction.activeTool !== 'move',
+      handles: s.settings.resizeHandles && (!item || this.isMovable(item.id)) && this.interaction.activeTool !== 'move',
     });
+    this.selection.setLevelOptions(item && this.isMovable(item.id) ? this.levelOptions(item.id) : null);
+    this.selection.setLockState(item?.locked ? 'locked' : item && this.pinnedIds().has(item.id) ? 'support' : null);
     this.cargo.setHighlight(this.hoverId, s.selectedId);
+  }
+
+  private pinnedIds(): Set<string> {
+    const items = useStore.getState().items;
+    if (this.pinned?.items !== items) this.pinned = { items, ids: pinnedIds(items) };
+    return this.pinned.ids;
+  }
+
+  /** Whether the selected item could go up or down a level: from the drag, or where it stands. */
+  private levelOptions(id: string): { up: boolean; down: boolean } | null {
+    const tool = this.interaction.currentTool;
+    if (tool) return tool.levelOptions?.() ?? null;
+    const items = useStore.getState().items;
+    if (this.levels?.items !== items || this.levels.id !== id) {
+      const { up, down } = verticalOptions(items, id);
+      this.levels = { items, id, up: up !== null, down: down !== null };
+    }
+    return this.levels;
   }
 
   private updateShadowCamera(layout: VehicleLayout): void {

@@ -19,18 +19,30 @@ export function supportHeight(footprint: Box, obstacles: readonly Box[]): number
 }
 
 /**
- * Same as {@link supportHeight} for a rigid group. `members` are positioned in XZ, their Y is
- * relative to the group base. Returns the base Y.
+ * Every base Y at which a rigid group can rest without intersecting an obstacle, ascending: on the
+ * floor or with a member on top of an obstacle. `members` are positioned in XZ, their Y is relative
+ * to the group base. The highest level is on top of everything under (or above) the footprint, as in
+ * {@link supportHeight}; lower ones are gaps under overhanging cargo (a "bridge" over two stacks).
  */
-export function groupBaseY(members: readonly Box[], obstacles: readonly Box[]): number {
-  let y = 0;
+export function restingLevels(members: readonly Box[], obstacles: readonly Box[]): number[] {
+  const pairs: Array<[Box, Box]> = [];
   for (const m of members) {
-    for (const o of obstacles) {
-      const need = o.max.y - m.min.y;
-      if (need > y && overlapsXZ(m, o)) y = need;
-    }
+    for (const o of obstacles) if (overlapsXZ(m, o)) pairs.push([m, o]);
   }
-  return y;
+  const candidates = [0];
+  for (const [m, o] of pairs) {
+    const y = o.max.y - m.min.y;
+    if (y > 0) candidates.push(y);
+  }
+  candidates.sort((a, b) => a - b);
+
+  const levels: number[] = [];
+  for (const y of candidates) {
+    if (levels.length > 0 && y - levels[levels.length - 1] < EPS) continue;
+    const free = pairs.every(([m, o]) => y + m.max.y <= o.min.y + EPS || y + m.min.y >= o.max.y - EPS);
+    if (free) levels.push(y);
+  }
+  return levels;
 }
 
 export interface SettleOptions {
@@ -109,6 +121,26 @@ export function collectStack(rootId: string, items: readonly CargoItem[]): Set<s
     }
   }
   return group;
+}
+
+/**
+ * Items that must stay where they are: the locked ones and everything they rest on, directly or
+ * through other items (moving a support would drop a locked item). Gravity never moves them either:
+ * their supports stay.
+ */
+export function pinnedIds(items: readonly CargoItem[]): Set<string> {
+  const pinned = new Set<string>();
+  if (!items.some((i) => i.locked)) return pinned;
+  const all = items.map((i) => ({ id: i.id, box: itemBox(i) }));
+  const byId = new Map(all.map((e) => [e.id, e]));
+  const queue = items.filter((i) => i.locked).map((i) => i.id);
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    if (pinned.has(id)) continue;
+    pinned.add(id);
+    for (const s of supportersOf(byId.get(id)!.box, id, all)) if (!pinned.has(s)) queue.push(s);
+  }
+  return pinned;
 }
 
 /** Pairs of intersecting items (diagnostics and tests). */

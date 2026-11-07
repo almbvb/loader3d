@@ -18,6 +18,8 @@ import { COLORS } from './theme';
 export interface VehicleViewOptions {
   units: Units;
   showDimensions: boolean;
+  /** Translucent walls, roof and side posts of the bodies (default true); the frame and floor marks always show. */
+  showWalls?: boolean;
   /** Highlighted name tag when there are several vehicles. */
   activeVehicleId?: string | null;
 }
@@ -60,6 +62,8 @@ export class VehicleView {
   onVehicleClick: ((id: string) => void) | null = null;
   private readonly dimensions = new THREE.Group();
   private readonly tags = new Map<string, HTMLElement>();
+  /** Translucent walls, roof and side posts of every body (the «Стенки кузова» setting). */
+  private readonly walls: THREE.Object3D[] = [];
   /** Where `add()` puts objects: the root, or the group of the vehicle being built. */
   private parent: THREE.Object3D = this.root;
 
@@ -151,6 +155,12 @@ export class VehicleView {
     this.dimensions.visible = options.showDimensions;
     this.root.add(this.dimensions);
     this.setActive(options.activeVehicleId ?? null);
+    this.setWallsVisible(options.showWalls ?? true);
+  }
+
+  /** Shows or hides the translucent walls, roof and side posts; the frame stays. */
+  setWallsVisible(visible: boolean): void {
+    for (const obj of this.walls) obj.visible = visible;
   }
 
   /** Highlights the name tag of the active vehicle. */
@@ -179,6 +189,7 @@ export class VehicleView {
 
   private clear(): void {
     this.tags.clear();
+    this.walls.length = 0;
     for (const child of [...this.root.children]) {
       disposeTree(child);
       this.root.remove(child);
@@ -289,9 +300,9 @@ export class VehicleView {
     const front = new THREE.Mesh(new THREE.PlaneGeometry(W, H), this.mats.bulkhead);
     front.rotation.y = Math.PI / 2;
     front.position.set(max.x + o, H / 2, 0);
-    this.add(new THREE.Group().add(left, right, roof, front));
+    this.walls.push(this.add(new THREE.Group().add(left, right, roof, front)));
 
-    // Frame and side posts.
+    // Frame (always) and side posts (with the walls).
     this.add(fatSegments(boxEdges(min, max), this.frameMaterial));
     const posts: number[] = [];
     const count = Math.max(1, Math.round(L / 120));
@@ -299,7 +310,7 @@ export class VehicleView {
       const x = min.x + (L * i) / count;
       posts.push(x, 0, min.z, x, H, min.z, x, 0, max.z, x, H, max.z, x, H, min.z, x, H, max.z);
     }
-    this.add(this.lines(posts, this.mats.posts));
+    this.walls.push(this.add(this.lines(posts, this.mats.posts)));
 
     // Chassis, axles and wheels.
     this.add(this.box([L - 60, 26, W - 90], this.mats.chassis, [cx, -23, 0]), { cast: true });

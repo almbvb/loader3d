@@ -261,3 +261,11 @@ async def test_invalid_plan_data_is_rejected(anna, data):
 @pytest.mark.parametrize("name", ["", "   ", "x" * 201])
 async def test_plan_name_is_validated(anna, name):
     assert (await anna.post("/api/plans", json={"name": name})).status_code == 422
+
+
+async def test_fixed_cargo_round_trips(anna):
+    data = plan_data(2)
+    data["items"][0]["locked"] = True
+    created = (await anna.post("/api/plans", json={"name": "С фиксацией", "data": data})).json()
+    assert created["data"]["items"][0]["locked"] is True
+    assert "locked" not in created["data"]["items"][1]

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { VehicleLayout } from '../core/layout';
+import { DECK_HEIGHT, type VehicleLayout } from '../core/layout';
 import { loadLengths } from '../core/stats';
 import type { CargoItem } from '../core/types';
 import { formatLength, type Units } from '../core/units';
@@ -13,10 +13,13 @@ export interface LoadLengthOptions {
 }
 
 const ACROSS = new THREE.Vector3(0, 0, 1);
+/** On the ground beside the vehicle, clear of its wheels and cab, so it does not merge with the body. */
+const GROUND_Y = -DECK_HEIGHT + 0.5;
+const SIDE_CLEARANCE = 45;
 
 /**
- * Load length of every body: a dimension along the bottom edge of its side, from the front wall to
- * the rearmost cargo (the LDM of the stats bar). Follows the cargo, drag previews included.
+ * Load length of every body: a dimension on the ground along its side, from the front wall to the
+ * rearmost cargo (the LDM of the stats bar). Follows the cargo, drag previews included.
  */
 export class LoadLengthView {
   readonly root = new THREE.Group();
@@ -44,9 +47,9 @@ export class LoadLengthView {
       const key = `${box.max.x}|${box.max.z}|${length}|${text}`;
       if (this.keys[i] !== key) {
         this.keys[i] = key;
-        this.a.set(box.max.x - length, 0, box.max.z);
-        this.b.set(box.max.x, 0, box.max.z);
-        dim.update({ a: this.a, b: this.b, dir: ACROSS, offset: 36, arrow: 18, text });
+        this.a.set(box.max.x - length, GROUND_Y, box.max.z + SIDE_CLEARANCE);
+        this.b.set(box.max.x, GROUND_Y, box.max.z + SIDE_CLEARANCE);
+        dim.update({ a: this.a, b: this.b, dir: ACROSS, offset: 32, gap: 0, arrow: 18, text });
       }
     }
     this.dims.forEach((dim, i) => (dim.visible = i < count));

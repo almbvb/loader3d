@@ -18,6 +18,9 @@ export interface Tool {
   move(p: PointerInfo): void;
   /** `commit === false` reverts the preview (Esc, pointer cancel, lost focus). */
   end(commit: boolean): void;
+  /** Dragged cargo: whether it could go up or down where it is now, and switching (PgUp/PgDn). */
+  levelOptions?(): { up: boolean; down: boolean } | null;
+  stepLevel?(dir: 1 | -1): void;
 }
 
 export type ToolKind = 'move' | 'resize';

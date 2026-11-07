@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import type { Vehicle } from '../core/types';
 import { itemBox } from '../core/item';
+import { pinnedIds } from '../core/physics';
 import type { VehicleLayout } from '../core/layout';
 import { classify, computeStats, type Placement, type PlanStats } from '../core/stats';
 import type { Units } from '../core/units';
@@ -20,6 +21,12 @@ export function usePlacements(): Map<string, Placement> {
   const items = useStore((s) => s.items);
   const layout = useLayout();
   return useMemo(() => new Map(items.map((i) => [i.id, classify(itemBox(i), layout)])), [items, layout]);
+}
+
+/** Fixed cargo and what it stands on (they cannot be moved, turned or resized). */
+export function usePinned(): Set<string> {
+  const items = useStore((s) => s.items);
+  return useMemo(() => pinnedIds(items), [items]);
 }
 
 export function useStats(): PlanStats {

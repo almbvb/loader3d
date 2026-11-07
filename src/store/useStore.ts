@@ -3,10 +3,10 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import type { CargoBody, CargoItem, Dims, DockMode, Plan, Vehicle } from '../core/types';
 import { computeLayout, ownerVehicle, type VehicleLayout } from '../core/layout';
 import { itemBox, itemSize, sanitizeItemDims, uid } from '../core/item';
-import { settle } from '../core/physics';
+import { pinnedIds, settle } from '../core/physics';
 import { dockSpot } from '../core/spawn';
 import { effectiveDims, rotate90, type RotationAxis } from '../core/orientation';
-import { beginMove, evaluateMove, finishMove } from '../core/move';
+import { adjacentLevel, beginMove, evaluateMove, finishMove, moveLevels } from '../core/move';
 import { nextVehicleName, parsePlan, relayout } from '../core/plan';
 import {
   BODY_LIMITS,
@@ -31,6 +31,10 @@ export interface Settings {
   highlightOverflow: boolean;
   showDimensions: boolean;
   showLabels: boolean;
+  /** Translucent walls, roof and side posts of the bodies; the frame and the floor marks always show. */
+  showBodyWalls: boolean;
+  /** View mode: cargo is not dragged or resized with the mouse (a press orbits the camera, a tap selects). */
+  lockCargo: boolean;
   snapping: boolean;
   resizeHandles: boolean;
   cameraLocked: boolean;
@@ -81,6 +85,10 @@ export interface AppState extends PlanState {
   /** A quarter turn about a world axis (default: the vertical). */
   rotateItem(id: string, axis?: RotationAxis): void;
   nudgeItem(id: string, dx: number, dz: number): void;
+  /** Moves the item (with its stack) straight up (1) or down (−1) to the next level where it fits. */
+  shiftLevel(id: string, dir: 1 | -1): void;
+  /** Fixes an item in place (or frees it): it and what it stands on can no longer be moved. */
+  setLocked(id: string, locked: boolean): void;
   clearItems(): void;
   /** Selecting cargo in another vehicle makes that vehicle the active one. */
   select(id: string | null): void;
@@ -117,6 +125,8 @@ const DEFAULT_SETTINGS: Settings = {
   highlightOverflow: true,
   showDimensions: true,
   showLabels: true,
+  showBodyWalls: true,
+  lockCargo: false,
   snapping: true,
   resizeHandles: true,
   cameraLocked: false,
@@ -311,6 +321,8 @@ export const useStore = create<AppState>()(
 
         updateItem(id, patch) {
           const s = get();
+          // A fixed item keeps its size (name, colour and weight may change).
+          if (patch.dims && pinnedIds(s.items).has(id)) patch = { ...patch, dims: undefined };
           const items = s.items.map((i) => {
             if (i.id !== id) return i;
             const next = { ...i };
@@ -347,8 +359,9 @@ export const useStore = create<AppState>()(
           const s = get();
           const source = s.items.find((i) => i.id === id);
           if (!source) return;
+          const { locked: _, ...free } = source;
           const copy = placeOnDock(
-            { ...source, id: uid('cargo'), seq: s.nextSeq, pos: { ...source.pos } },
+            { ...free, id: uid('cargo'), seq: s.nextSeq, pos: { ...source.pos } },
             s.items,
             layoutOf(s),
             vehicleOf(s, source) ?? s.activeVehicleId,
@@ -359,6 +372,7 @@ export const useStore = create<AppState>()(
 
         rotateItem(id, axis = 'y') {
           const s = get();
+          if (pinnedIds(s.items).has(id)) return;
           const items = s.items.map((i) => {
             if (i.id !== id) return i;
             // About the centre of the footprint; the bottom stays where it was, gravity does the rest.
@@ -374,16 +388,41 @@ export const useStore = create<AppState>()(
 
         nudgeItem(id, dx, dz) {
           const s = get();
-          if (!s.items.some((i) => i.id === id)) return;
+          if (!s.items.some((i) => i.id === id) || pinnedIds(s.items).has(id)) return;
           const layout = layoutOf(s);
           const session = beginMove(s.items, id, true);
           const root = session.members[0];
           const result = evaluateMove(
             session,
             { x: root.pos.x + dx, z: root.pos.z + dz },
-            { floors: layout.floors, walls: layout.walls, snapThreshold: 0 },
+            { floors: layout.floors, walls: layout.walls, snapThreshold: 0, preferY: root.pos.y },
           );
           commit({ items: finishMove(s.items, session, result.members) }, {}, `nudge:${id}`);
+        },
+
+        shiftLevel(id, dir) {
+          const s = get();
+          if (!s.items.some((i) => i.id === id) || pinnedIds(s.items).has(id)) return;
+          const session = beginMove(s.items, id, true);
+          const root = session.members[0];
+          const target = adjacentLevel(moveLevels(session), root.pos.y, dir);
+          if (target === null) return;
+          const layout = layoutOf(s);
+          const result = evaluateMove(
+            session,
+            { x: root.pos.x, z: root.pos.z },
+            { floors: layout.floors, walls: layout.walls, snapThreshold: 0, preferY: target },
+          );
+          commit({ items: finishMove(s.items, session, result.members) });
+        },
+
+        setLocked(id, locked) {
+          const s = get();
+          const item = s.items.find((i) => i.id === id);
+          if (!item || !!item.locked === locked) return;
+          const { locked: _, ...free } = item;
+          const next: CargoItem = locked ? { ...free, locked: true } : free;
+          commit({ items: s.items.map((i) => (i.id === id ? next : i)) });
         },
 
         clearItems() {

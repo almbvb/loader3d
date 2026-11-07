@@ -9,6 +9,14 @@ import type { PointerInfo, Tool, ToolKind } from './tools/Tool';
 const DRAG_THRESHOLD: Record<string, number> = { mouse: 3, pen: 5, touch: 8 };
 const DOUBLE_TAP_MS = 350;
 
+/** A press that went to the camera; on a tap (no travel) it selects `itemId` or clears the selection. */
+interface CameraPress {
+  pointerId: number;
+  x: number;
+  y: number;
+  itemId?: string;
+}
+
 interface Pending {
   pointerId: number;
   pointerType: string;
@@ -32,6 +40,12 @@ function toInfo(e: PointerEvent): PointerInfo {
   };
 }
 
+/** WASD: camera flight over the ground, [forward, right]. */
+const FLY_KEYS: Record<string, [number, number]> = { KeyW: [1, 0], KeyS: [-1, 0], KeyA: [0, -1], KeyD: [0, 1] };
+
+/** Up / down a level: from under a "bridge" of cargo on top of it and back. */
+const LEVEL_KEYS: Record<string, 1 | -1> = { PageUp: 1, PageDown: -1 };
+
 /** Rotation keys when tilting is allowed (R is always the vertical). */
 const TILT_KEYS: Record<string, RotationAxis> = { KeyX: 'x', KeyY: 'y', KeyZ: 'z' };
 
@@ -50,7 +64,8 @@ function isTypingTarget(target: EventTarget | null): boolean {
 /**
  * Context-sensitive pointer routing — no mode switches:
  *  - press on empty space → the event goes on to OrbitControls (rotate / pan / zoom);
- *  - press on a cargo item → OrbitControls never sees it, the item is selected and dragged;
+ *  - press on a cargo item → OrbitControls never sees it, the item is selected and dragged (in view mode
+ *    and on fixed cargo the press goes to the camera instead, a tap selects);
  *  - press on a resize handle of the selected item → push/pull of that face.
  *
  * Listeners sit on the host element in the capture phase, so they run before OrbitControls'
@@ -61,7 +76,10 @@ export class InteractionManager {
   private tool: Tool | null = null;
   /** Pointers handed over to OrbitControls (a second finger joins an orbit/pinch gesture). */
   private readonly passthrough = new Set<number>();
-  private emptyPress: { pointerId: number; x: number; y: number } | null = null;
+  private emptyPress: CameraPress | null = null;
+  /** WASD keys held down, and whether Shift is. */
+  private readonly flyKeys = new Set<string>();
+  private flyFast = false;
   private queuedMove: PointerInfo | null = null;
   private moveFrame = 0;
   private hoverFrame = 0;
@@ -79,11 +97,17 @@ export class InteractionManager {
     window.addEventListener('pointerup', this.onPointerUp, { capture: true });
     window.addEventListener('pointercancel', this.onPointerCancel, { capture: true });
     window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onWindowBlur);
   }
 
   get activeTool(): ToolKind | null {
     return this.tool?.kind ?? null;
+  }
+
+  /** The gesture in progress, if any. */
+  get currentTool(): Tool | null {
+    return this.tool;
   }
 
   dispose(): void {
@@ -97,7 +121,22 @@ export class InteractionManager {
     window.removeEventListener('pointerup', this.onPointerUp, { capture: true });
     window.removeEventListener('pointercancel', this.onPointerCancel, { capture: true });
     window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onWindowBlur);
+  }
+
+  /** Moves the camera for the WASD keys held down; true while it moves (the engine keeps rendering). */
+  fly(dt: number): boolean {
+    if (this.flyKeys.size === 0) return false;
+    let forward = 0;
+    let right = 0;
+    for (const code of this.flyKeys) {
+      forward += FLY_KEYS[code][0];
+      right += FLY_KEYS[code][1];
+    }
+    if (forward === 0 && right === 0) return false;
+    const norm = Math.hypot(forward, right);
+    return this.engine.flyCamera(forward / norm, right / norm, dt, this.flyFast);
   }
 
   private readonly onPointerDown = (e: PointerEvent) => {
@@ -122,6 +161,12 @@ export class InteractionManager {
     if (!hit) {
       this.passthrough.add(e.pointerId);
       this.emptyPress = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+      return;
+    }
+    if (hit.kind === 'item' && !this.engine.isMovable(hit.id)) {
+      // View mode or a fixed item: the press turns the camera, a tap still selects.
+      this.passthrough.add(e.pointerId);
+      this.emptyPress = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, itemId: hit.id };
       return;
     }
 
@@ -173,7 +218,8 @@ export class InteractionManager {
     if (empty && empty.pointerId === e.pointerId) {
       this.emptyPress = null;
       if (Math.hypot(e.clientX - empty.x, e.clientY - empty.y) < threshold(e.pointerType)) {
-        this.engine.store.getState().select(null);
+        this.engine.store.getState().select(empty.itemId ?? null);
+        if (empty.itemId) this.handleTap(empty.itemId);
       }
     }
 
@@ -196,6 +242,7 @@ export class InteractionManager {
   };
 
   private readonly onWindowBlur = () => {
+    this.flyKeys.clear();
     this.passthrough.clear();
     this.emptyPress = null;
     this.cancelTool();
@@ -224,7 +271,7 @@ export class InteractionManager {
       this.engine.setCursor(hit.face === 'y+' ? 'ns-resize' : 'ew-resize');
     } else {
       this.engine.setHover(hit.id, null);
-      this.engine.setCursor('grab');
+      this.engine.setCursor(this.engine.isMovable(hit.id) ? 'grab' : 'pointer');
     }
   };
 
@@ -244,6 +291,22 @@ export class InteractionManager {
     if (e.key === 'Escape') {
       if (this.tool || this.pending) this.cancelTool();
       else state.select(null);
+      return;
+    }
+    const fly = FLY_KEYS[e.code];
+    if (fly && !mod && !e.altKey) {
+      e.preventDefault();
+      this.flyFast = e.shiftKey;
+      if (!this.flyKeys.has(e.code)) {
+        this.flyKeys.add(e.code);
+        this.engine.requestRender();
+      }
+      return;
+    }
+    const levelDir = LEVEL_KEYS[e.key];
+    if (levelDir && this.tool?.stepLevel) {
+      e.preventDefault();
+      this.tool.stepLevel(levelDir);
       return;
     }
     if (this.pending) return;
@@ -276,12 +339,23 @@ export class InteractionManager {
       state.duplicateItem(id);
     } else if (e.code === 'KeyF' && !mod) {
       this.engine.focusItem(id);
+    } else if (levelDir && !mod) {
+      e.preventDefault();
+      state.shiftLevel(id, levelDir);
+    } else if (e.code === 'KeyL' && !mod) {
+      e.preventDefault();
+      state.setLocked(id, !state.items.find((i) => i.id === id)?.locked);
     } else if (e.key.startsWith('Arrow')) {
       const step = this.engine.cameraAlignedStep(e.key, e.shiftKey ? 10 : 1);
       if (!step) return;
       e.preventDefault();
       state.nudgeItem(id, step.x, step.z);
     }
+  };
+
+  private readonly onKeyUp = (e: KeyboardEvent) => {
+    this.flyKeys.delete(e.code);
+    this.flyFast = e.shiftKey;
   };
 
   private createTool(p: Pending): Tool {

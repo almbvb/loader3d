@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Lock, LockOpen, Scale, Scan, TriangleAlert, X } from 'lucide-react';
+import { Hand, Lock, LockOpen, Scale, Scan, TriangleAlert, X } from 'lucide-react';
 import { COG_LAT_TOLERANCE, COG_LONG_TOLERANCE, type BodyStats } from '../core/stats';
 import { formatMeters, formatPercent, formatVolume, formatWeight } from '../core/units';
 import type { ViewPreset } from '../scene/CameraRig';
@@ -81,6 +81,7 @@ const VIEWS: Array<{ id: ViewPreset; label: string; title: string }> = [
 /** Camera presets, "show all" and the optional camera lock. */
 function ViewToolbar() {
   const locked = useStore((s) => s.settings.cameraLocked);
+  const viewMode = useStore((s) => s.settings.lockCargo);
   const setSetting = useStore((s) => s.setSetting);
 
   return (
@@ -108,6 +109,25 @@ function ViewToolbar() {
           </Button>
         </TooltipTrigger>
         <TooltipContent>Показать всё</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-pressed={viewMode}
+            aria-label="Фиксация грузов"
+            className={cn(viewMode && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary')}
+            onClick={() => setSetting('lockCargo', !viewMode)}
+          >
+            <Hand />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {viewMode
+            ? 'Грузы зафиксированы: мышью крутится только камера — нажмите, чтобы снова двигать грузы'
+            : 'Фиксация грузов: мышью не двигать грузы, только смотреть'}
+        </TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
