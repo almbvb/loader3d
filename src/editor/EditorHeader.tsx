@@ -68,7 +68,7 @@ export function EditorHeader() {
   const leave = async () => {
     await flush();
     const { status, error } = usePlanSync.getState();
-    if (status === 'saved') navigate('/');
+    if (status === 'saved') navigate('/plans');
     else toast.error('Изменения ещё не сохранены', { description: error ?? 'Попробуйте ещё раз через пару секунд' });
   };
 

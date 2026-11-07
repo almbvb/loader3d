@@ -36,7 +36,7 @@ export function AccountPage() {
       <AppHeader />
       <main className="mx-auto max-w-3xl px-4 pt-6 pb-16 sm:px-6">
         <Button variant="ghost" size="sm" asChild className="-ml-2 text-muted-foreground">
-          <Link to="/">
+          <Link to="/plans">
             <ArrowLeft /> Мои схемы
           </Link>
         </Button>

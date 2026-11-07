@@ -25,8 +25,22 @@ type LoadState = { status: 'loading' } | { status: 'ready' } | { status: 'error'
 
 const DEFAULT_TITLE = document.title;
 
+/** Pinch or double-tap zoom of the page would fight the scene's own gestures on tablets. */
+function useNoPageZoom(): void {
+  useEffect(() => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (!meta) return;
+    const before = meta.content;
+    meta.content = `${before}, maximum-scale=1, user-scalable=no`;
+    return () => {
+      meta.content = before;
+    };
+  }, []);
+}
+
 /** /plans/:planId — loads the plan into the store, then mounts the 3D editor around it. */
 export function EditorPage() {
+  useNoPageZoom();
   const { planId = '' } = useParams();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -86,7 +100,7 @@ export function EditorPage() {
           </EmptyHeader>
           <EmptyContent className="flex-row justify-center">
             <Button variant="outline" asChild>
-              <Link to="/">
+              <Link to="/plans">
                 <ArrowLeft /> Все схемы
               </Link>
             </Button>

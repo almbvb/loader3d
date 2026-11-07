@@ -1,12 +1,10 @@
 import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, hydrateRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router';
 import { ApiError } from './api/client';
-import { App } from './App';
-import { Toaster } from './components/ui/sonner';
-import { TooltipProvider } from './components/ui/tooltip';
-import { useAuth } from './store/useAuth';
+import { Shell } from './Shell';
+import { useAuth, wasSignedIn } from './store/useAuth';
 import './store/accountSync';
 import './index.css';
 
@@ -27,15 +25,23 @@ useAuth.subscribe((state, prev) => {
 });
 void useAuth.getState().bootstrap();
 
-createRoot(document.getElementById('root')!).render(
+const app = (
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <TooltipProvider delayDuration={300}>
-          <App />
-          <Toaster position="bottom-right" />
-        </TooltipProvider>
+        <Shell />
       </BrowserRouter>
     </QueryClientProvider>
-  </StrictMode>,
+  </StrictMode>
 );
+
+// index.html carries the landing page prerendered for search engines (scripts/prerender.mjs): hydrate
+// it where the page is exactly that. Elsewhere (and for a browser that was logged in, which goes on to
+// its plans) render from scratch.
+const root = document.getElementById('root')!;
+if (root.hasChildNodes() && window.location.pathname === '/' && !wasSignedIn()) {
+  hydrateRoot(root, app);
+} else {
+  root.textContent = '';
+  createRoot(root).render(app);
+}

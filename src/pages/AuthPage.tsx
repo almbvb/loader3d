@@ -32,7 +32,7 @@ export function AuthPage({ mode }: { mode: Mode }) {
   const register = useAuth((s) => s.register);
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from ?? '/';
+  const from = (location.state as { from?: string } | null)?.from ?? '/plans';
   const [params] = useSearchParams();
   const [tier, setTier] = useState<ChosenTier>(TIERS_ENABLED && params.get('tier') === 'pro' ? 'pro' : 'free');
 

@@ -22,7 +22,8 @@ Architecture, controls, API endpoints and extension points are in README.md — 
 - `npm run dev` — dev server on http://localhost:5173 (also `.claude/launch.json` → "loader3d"). Login and
   plans need the backend running too ("api" below).
 - `npm test` — Vitest unit tests for `src/core`.
-- `npx tsc --noEmit` — typecheck; `npm run build` — typecheck + production build.
+- `npx tsc --noEmit` — typecheck; `npm run build` — typecheck + production build + prerender of the landing
+  page (`scripts/prerender.mjs`); `npm run preview` (`.claude/launch.json` → "loader3d-preview") serves it.
 - Admin access: `python -m app make-admin EMAIL` (`--revoke`), in Docker `docker compose exec api python -m app …`.
 - Run all three before calling a change done; check scene changes in the browser.
 - Backend (from `backend/`, needs uv): `uv run python -m app --reload` — migrations + API on :8000
@@ -66,8 +67,9 @@ Architecture, controls, API endpoints and extension points are in README.md — 
 - Plans come from the server: the editor loads one with `store.openPlan()` (fresh undo history) and
   `editor/planSync.ts` autosaves every change of bodies/items (PATCH with `version`; 409 → conflict
   dialog). Display settings belong to the account: `store/accountSync.ts` applies `user.settings` on login
-  and PATCHes `/users/me/settings` on change; nothing of the app is kept in localStorage. A new setting goes
-  into `Settings`/`DEFAULT_SETTINGS` (`useStore.ts`) and `DisplaySettingsIn` (`backend/app/schemas/auth.py`).
+  and PATCHes `/users/me/settings` on change; nothing of the app is kept in localStorage except the
+  "was signed in" flag of `useAuth` (no token). A new setting goes into `Settings`/`DEFAULT_SETTINGS`
+  (`useStore.ts`) and `DisplaySettingsIn` (`backend/app/schemas/auth.py`).
 - Tiers exist only with `TIERS_ENABLED=true` (root `.env`, default false): the API then sends `subscription`
   and enforces limits; the frontend gets the same variable at build time as `TIERS_ENABLED`
   (`src/lib/tiers.ts`, `define` in vite.config.ts). Off — no tariff word anywhere in the UI: gate new
@@ -76,6 +78,10 @@ Architecture, controls, API endpoints and extension points are in README.md — 
   for the UI in `src/lib/tiers.ts` (prices, texts, the pricing table) — change both. The store refuses
   vehicles/items over `limits` (`limitHit` → upgrade dialog); autoload and the step-by-step PDF are hidden
   behind `useFeature()`. There is no online payment: admins assign paid tiers.
+- The landing page (`pages/LandingPage.tsx`, `Shell.tsx`) is rendered on the server by
+  `scripts/prerender.mjs` and hydrated by `main.tsx`: nothing it imports may touch `window`/`document`
+  while rendering or at module level, and its first render must not depend on the browser. The FAQ there is
+  also the FAQPage JSON-LD (`src/prerender.tsx`).
 - The access token is kept in memory by `api/client.ts`; on 401 it refreshes once via the cookie and
   retries. Never store tokens in localStorage.
 - Admin API (`routers/admin.py`) needs `AdminAuth`; an admin cannot block, demote or delete themselves.

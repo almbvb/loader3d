@@ -49,7 +49,7 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuItem onSelect={() => navigate('/')}>
+          <DropdownMenuItem onSelect={() => navigate('/plans')}>
             <LayoutGrid /> Мои схемы
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => navigate('/account')}>

@@ -18,7 +18,7 @@ export function FullScreenLoader({ label = 'Загрузка…' }: { label?: st
 }
 
 /** While the session is being restored on page load. */
-function SessionLoader() {
+export function SessionLoader() {
   const reconnecting = useAuth((s) => s.reconnecting);
   return <FullScreenLoader label={reconnecting ? 'Нет связи с сервером, переподключаемся…' : undefined} />;
 }
@@ -37,7 +37,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 /** The admin panel: other users go to their plans. */
 export function RequireAdmin({ children }: { children: ReactNode }) {
   const isAdmin = useAuth((s) => s.user?.isAdmin ?? false);
-  return <RequireAuth>{isAdmin ? children : <Navigate to="/" replace />}</RequireAuth>;
+  return <RequireAuth>{isAdmin ? children : <Navigate to="/plans" replace />}</RequireAuth>;
 }
 
 /** Login / register: a logged-in user goes straight to the app. */
@@ -46,7 +46,7 @@ export function PublicOnly({ children }: { children: ReactNode }) {
   const location = useLocation();
   if (status === 'loading') return <SessionLoader />;
   if (status === 'authenticated') {
-    return <Navigate to={(location.state as { from?: string } | null)?.from ?? '/'} replace />;
+    return <Navigate to={(location.state as { from?: string } | null)?.from ?? '/plans'} replace />;
   }
   return children;
 }

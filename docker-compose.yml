@@ -21,7 +21,9 @@ services:
       args:
         NODE_VERSION: ${NODE_VERSION:-24}
         CADDY_VERSION: ${CADDY_VERSION:-2}
-        # Tariffs in the app (built into the frontend); the api reads it too.
+        # Absolute URLs of the prerendered landing page (canonical, Open Graph, sitemap.xml).
+        SITE_URL: ${SITE_URL:-}
+        # Tariffs on the site (the landing page is prerendered with or without them); the api reads it too.
         TIERS_ENABLED: ${TIERS_ENABLED:-false}
     restart: unless-stopped
     environment:
