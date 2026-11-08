@@ -12,6 +12,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "--directory", "backend", "python", "-m", "app", "--reload"],
       "port": 8000
+    },
+    {
+      "name": "loader3d-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview"],
+      "port": 4173
     }
   ]
 }

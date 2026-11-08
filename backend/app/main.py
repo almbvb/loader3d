@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_sessionmaker
-from app.routers import auth, health, plans, users
+from app.routers import admin, auth, health, leads, plans, users
 
 API_PREFIX = "/api"
 
@@ -44,6 +44,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_headers=["*"],
         )
 
-    for module in (health, auth, users, plans):
+    for module in (health, auth, users, plans, leads, admin):
         app.include_router(module.router, prefix=API_PREFIX)
     return app

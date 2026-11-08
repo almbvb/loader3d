@@ -4,6 +4,8 @@ import { ArrowLeft, FileQuestion, RefreshCw } from 'lucide-react';
 import { ApiError, errorMessage } from '@/api/client';
 import { planApi } from '@/api/endpoints';
 import { FullScreenLoader } from '@/components/RouteGuards';
+import { UpgradeDialog, useUpgrade } from '@/components/UpgradeDialog';
+import { TIERS_ENABLED } from '@/lib/tiers';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
@@ -23,8 +25,22 @@ type LoadState = { status: 'loading' } | { status: 'ready' } | { status: 'error'
 
 const DEFAULT_TITLE = document.title;
 
+/** Pinch or double-tap zoom of the page would fight the scene's own gestures on tablets. */
+function useNoPageZoom(): void {
+  useEffect(() => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (!meta) return;
+    const before = meta.content;
+    meta.content = `${before}, maximum-scale=1, user-scalable=no`;
+    return () => {
+      meta.content = before;
+    };
+  }, []);
+}
+
 /** /plans/:planId — loads the plan into the store, then mounts the 3D editor around it. */
 export function EditorPage() {
+  useNoPageZoom();
   const { planId = '' } = useParams();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -84,7 +100,7 @@ export function EditorPage() {
           </EmptyHeader>
           <EmptyContent className="flex-row justify-center">
             <Button variant="outline" asChild>
-              <Link to="/">
+              <Link to="/plans">
                 <ArrowLeft /> Все схемы
               </Link>
             </Button>
@@ -105,7 +121,29 @@ export function EditorPage() {
 const PANEL_WIDTH = 360;
 const PANEL_GAP = 12;
 
+/** «не больше 1 машины», «не больше 100 грузов» (genitive after «больше»). */
+function limitText(kind: 'vehicles' | 'items', n: number): string {
+  const one = n % 10 === 1 && n % 100 !== 11;
+  return `${n} ${kind === 'vehicles' ? (one ? 'машины' : 'машин') : one ? 'груза' : 'грузов'}`;
+}
+
+/** An edit the store refused because of the tier opens the offer to upgrade. */
+function useLimitOffers(): void {
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        const hit = s.limitHit;
+        if (!hit || hit === prev.limitHit) return;
+        useUpgrade
+          .getState()
+          .show(`На тарифе «${hit.tierName}» в схеме не больше ${limitText(hit.kind, hit.limit)}. На «Профи» — до 10 машин и 5000 грузов.`);
+      }),
+    [],
+  );
+}
+
 function EditorLayout() {
+  useLimitOffers();
   const desktop = useMediaQuery('(min-width: 768px)');
   const panelHidden = useUi((s) => s.panelHidden);
   const setPanelHidden = useUi((s) => s.setPanelHidden);
@@ -142,6 +180,7 @@ function EditorLayout() {
       <AutoloadDialog />
       <PdfExportDialog />
       <ConflictDialog />
+      {TIERS_ENABLED && <UpgradeDialog />}
     </div>
   );
 }

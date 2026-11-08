@@ -182,6 +182,30 @@ describe('autoload', () => {
     }
   });
 
+  it('never moves fixed cargo, even when repacking everything', () => {
+    const layout = layoutOf([body()]);
+    const box = layout.bodies[0].box;
+    const fixed: CargoItem = {
+      id: 'fixed',
+      seq: 200,
+      name: 'fixed',
+      dims: PALLET,
+      orientation: { yaw: 0 },
+      pos: { x: box.max.x - 120, y: 0, z: box.min.z },
+      color: '#000',
+      weight: 50,
+      locked: true,
+    };
+    const docked = { ...onDock(layout, [], 1, PALLET, 300)[0], id: 'docked-fixed', locked: true };
+    const items = onDock(layout, [fixed, docked], 4, PALLET, 600);
+    const result = autoload(items, layout, { repackAll: true });
+    expectSound(result.items);
+    expect(result.items.find((i) => i.id === 'fixed')!.pos).toEqual(fixed.pos);
+    expect(result.items.find((i) => i.id === 'docked-fixed')!.pos).toEqual(docked.pos);
+    expect(result.loaded).toHaveLength(4);
+    expect(result.loaded).not.toContain('docked-fixed');
+  });
+
   it('handles hundreds of boxes quickly and soundly', () => {
     const layout = layoutOf([body()]);
     const items = onDock(layout, [], 300, { l: 60, w: 40, h: 40 }, 20);

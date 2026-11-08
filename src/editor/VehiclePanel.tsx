@@ -22,6 +22,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { NumberField, WeightField } from './fields';
+import { ProBadge, useUpgrade } from '@/components/UpgradeDialog';
 import { useActiveVehicle, useStats, useUnits } from './hooks';
 
 /**
@@ -290,6 +291,20 @@ function AddTrailer({ vehicle }: { vehicle: Vehicle }) {
 function AddVehicle() {
   const addVehicle = useStore((s) => s.addVehicle);
   const full = useStore((s) => s.vehicles.length >= MAX_VEHICLES);
+  const tierLimit = useStore((s) => (s.limits && s.vehicles.length >= s.limits.vehicles ? s.limits : null));
+  const showUpgrade = useUpgrade((s) => s.show);
+  if (tierLimit && !full) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full border-dashed text-muted-foreground"
+        onClick={() => showUpgrade(`На тарифе «${tierLimit.tierName}» в схеме одна машина. Несколько машин — на «Профи».`)}
+      >
+        <Plus /> Машина <ProBadge />
+      </Button>
+    );
+  }
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

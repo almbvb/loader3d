@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router';
-import { Box, Eye, EyeOff, Layers, OctagonAlert, Ruler } from 'lucide-react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
+import { Box, Check, Eye, EyeOff, Layers, OctagonAlert, Ruler } from 'lucide-react';
 import { ApiError, errorMessage } from '@/api/client';
 import { CargoIllustration } from '@/components/CargoIllustration';
 import { Logo } from '@/components/Logo';
@@ -10,7 +10,11 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/c
 import { Input } from '@/components/ui/input';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
 import { Spinner } from '@/components/ui/spinner';
+import { TIERS_ENABLED, TRIAL_DAYS, tierInfo } from '@/lib/tiers';
+import { cn } from '@/lib/utils';
 import { useAuth } from '@/store/useAuth';
+
+type ChosenTier = 'free' | 'pro';
 
 type Mode = 'login' | 'register';
 
@@ -28,7 +32,9 @@ export function AuthPage({ mode }: { mode: Mode }) {
   const register = useAuth((s) => s.register);
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from ?? '/';
+  const from = (location.state as { from?: string } | null)?.from ?? '/plans';
+  const [params] = useSearchParams();
+  const [tier, setTier] = useState<ChosenTier>(TIERS_ENABLED && params.get('tier') === 'pro' ? 'pro' : 'free');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -47,7 +53,7 @@ export function AuthPage({ mode }: { mode: Mode }) {
     setFieldErrors({});
     try {
       if (mode === 'login') await login(email, password);
-      else await register(email, password, displayName.trim());
+      else await register(email, password, displayName.trim(), tier);
       navigate(from, { replace: true });
     } catch (err) {
       if (err instanceof ApiError && Object.keys(err.fieldErrors).length > 0) setFieldErrors(err.fieldErrors);
@@ -76,6 +82,7 @@ export function AuthPage({ mode }: { mode: Mode }) {
             )}
 
             <FieldGroup className="gap-4">
+              {mode === 'register' && TIERS_ENABLED && <TierChoice value={tier} onChange={setTier} />}
               {mode === 'register' && (
                 <Field data-invalid={!!fieldErrors.displayName}>
                   <FieldLabel htmlFor="displayName">Имя</FieldLabel>
@@ -144,6 +151,15 @@ export function AuthPage({ mode }: { mode: Mode }) {
               </Button>
             </FieldGroup>
 
+            {mode === 'register' && TIERS_ENABLED && (
+              <p className="mt-4 text-center text-xs text-muted-foreground">
+                Компаниям с особыми задачами — тариф «Индивидуальный» по договору.{' '}
+                <Link to="/#contact" className="font-medium text-primary hover:underline">
+                  Оставить заявку
+                </Link>
+              </p>
+            )}
+
             <p className="mt-6 text-center text-sm text-muted-foreground">
               {mode === 'login' ? (
                 <>
@@ -166,6 +182,38 @@ export function AuthPage({ mode }: { mode: Mode }) {
       </div>
 
       <BrandPanel />
+    </div>
+  );
+}
+
+/** Free or the trial of «Профи»: the paid tier itself is activated by the team later. */
+function TierChoice({ value, onChange }: { value: ChosenTier; onChange(tier: ChosenTier): void }) {
+  const options: Array<{ id: ChosenTier; title: string; note: string }> = [
+    { id: 'free', title: tierInfo('free').name, note: 'Бесплатно, 3 схемы' },
+    { id: 'pro', title: tierInfo('pro').name, note: `${TRIAL_DAYS} дней бесплатно` },
+  ];
+  return (
+    <div role="radiogroup" aria-label="Тариф" className="grid grid-cols-2 gap-2">
+      {options.map((o) => {
+        const active = value === o.id;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(o.id)}
+            className={cn(
+              'relative rounded-xl border p-3 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+              active ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-muted/60',
+            )}
+          >
+            <span className="block text-sm font-semibold">{o.title}</span>
+            <span className="block text-xs text-muted-foreground">{o.note}</span>
+            {active && <Check className="absolute top-3 right-3 size-4 text-primary" />}
+          </button>
+        );
+      })}
     </div>
   );
 }

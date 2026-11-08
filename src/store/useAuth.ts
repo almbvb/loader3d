@@ -12,7 +12,7 @@ interface AuthState {
   /** Restores the session from the refresh cookie on page load. */
   bootstrap(): Promise<void>;
   login(email: string, password: string): Promise<void>;
-  register(email: string, password: string, displayName?: string): Promise<void>;
+  register(email: string, password: string, displayName?: string, tier?: 'free' | 'pro'): Promise<void>;
   logout(): Promise<void>;
   setUser(user: User): void;
   /** The server ended the session (revoked, expired, account deleted). */
@@ -27,6 +27,29 @@ type AuthEvent = { type: 'login'; userId: string } | { type: 'logout' };
 const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('loader3d:auth');
 
 const RETRY_DELAYS = [1000, 2000, 4000, 8000];
+
+/**
+ * Not a token: only remembers that this browser was logged in, so the landing page can show a loader
+ * instead of flashing the marketing page while the session is restored.
+ */
+const SIGNED_IN_KEY = 'loader3d:signed-in';
+
+export function wasSignedIn(): boolean {
+  try {
+    return localStorage.getItem(SIGNED_IN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function rememberSignedIn(value: boolean): void {
+  try {
+    if (value) localStorage.setItem(SIGNED_IN_KEY, '1');
+    else localStorage.removeItem(SIGNED_IN_KEY);
+  } catch {
+    /* private mode: only the loader is affected */
+  }
+}
 const MAX_RETRY_DELAY = 10_000;
 
 let bootstrapping: Promise<void> | null = null;
@@ -38,16 +61,18 @@ function unreachable(error: unknown): boolean {
 
 /** The cookie now belongs to another account than this tab shows: start over as that one. */
 function accountChanged(): void {
-  window.location.assign('/');
+  window.location.assign('/plans');
 }
 
 export const useAuth = create<AuthState>()((set, get) => {
   const signedIn = (auth: AuthResponse) => {
     setAccessToken(auth.accessToken);
+    rememberSignedIn(true);
     set({ status: 'authenticated', user: auth.user });
   };
   const signedOut = () => {
     setAccessToken(null);
+    rememberSignedIn(false);
     set({ status: 'anonymous', user: null });
   };
 
@@ -107,8 +132,8 @@ export const useAuth = create<AuthState>()((set, get) => {
       channel?.postMessage({ type: 'login', userId: auth.user.id } satisfies AuthEvent);
     },
 
-    async register(email, password, displayName) {
-      const auth = await authApi.register(email, password, displayName);
+    async register(email, password, displayName, tier) {
+      const auth = await authApi.register(email, password, displayName, tier);
       signedIn(auth);
       channel?.postMessage({ type: 'login', userId: auth.user.id } satisfies AuthEvent);
     },

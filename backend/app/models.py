@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, MetaData, String, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, MetaData, String, Uuid, false
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -58,8 +58,23 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(100))
     is_active: Mapped[bool] = mapped_column(default=True)
+    is_admin: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # Display settings of the editor (src/store/useStore.ts `Settings`), camelCase; null — defaults.
+    settings: Mapped[dict[str, Any] | None]
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    # Subscription (app/tiers.py): "free", "pro" or "custom" (by contract, set by an admin).
+    # A paid tier past `tier_expires_at` works as "free" until it is renewed; null — no end date.
+    tier: Mapped[str] = mapped_column(String(20), default="free", server_default="free")
+    tier_expires_at: Mapped[datetime | None]
+    # The current period is the free trial of "pro".
+    tier_trial: Mapped[bool] = mapped_column(default=False, server_default=false())
+    trial_used_at: Mapped[datetime | None]
+    # "custom" only: {"plans", "vehicles", "items"} overriding the tier's limits (null — no limit).
+    tier_limits: Mapped[dict[str, Any] | None]
+    # Admin's note: contract, invoice, contact person.
+    tier_note: Mapped[str | None] = mapped_column(String(500))
 
     sessions: Mapped[list[AuthSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True
@@ -67,6 +82,26 @@ class User(Base):
     plans: Mapped[list[Plan]] = relationship(
         back_populates="owner", cascade="all, delete-orphan", passive_deletes=True
     )
+
+
+class Lead(Base):
+    """A request from the landing page or the account page: the "custom" tier, help with a plan."""
+
+    __tablename__ = "leads"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid7)
+    name: Mapped[str] = mapped_column(String(100))
+    email: Mapped[str | None] = mapped_column(String(320))
+    phone: Mapped[str | None] = mapped_column(String(40))
+    company: Mapped[str | None] = mapped_column(String(200))
+    message: Mapped[str | None] = mapped_column(String(2000))
+    # The tier the request is about, if any.
+    tier: Mapped[str | None] = mapped_column(String(20))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    ip_address: Mapped[str | None] = mapped_column(String(45))
+    # "new" until an admin handles it, then "done".
+    status: Mapped[str] = mapped_column(String(20), default="new", server_default="new")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
 
 class AuthSession(Base):

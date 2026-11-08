@@ -22,7 +22,9 @@ Architecture, controls, API endpoints and extension points are in README.md — 
 - `npm run dev` — dev server on http://localhost:5173 (also `.claude/launch.json` → "loader3d"). Login and
   plans need the backend running too ("api" below).
 - `npm test` — Vitest unit tests for `src/core`.
-- `npx tsc --noEmit` — typecheck; `npm run build` — typecheck + production build.
+- `npx tsc --noEmit` — typecheck; `npm run build` — typecheck + production build + prerender of the landing
+  page (`scripts/prerender.mjs`); `npm run preview` (`.claude/launch.json` → "loader3d-preview") serves it.
+- Admin access: `python -m app make-admin EMAIL` (`--revoke`), in Docker `docker compose exec api python -m app …`.
 - Run all three before calling a change done; check scene changes in the browser.
 - Backend (from `backend/`, needs uv): `uv run python -m app --reload` — migrations + API on :8000
   (`.claude/launch.json` → "api"; Vite proxies `/api` there); `uv run pytest`; `uv run ruff check .` and
@@ -34,7 +36,13 @@ Architecture, controls, API endpoints and extension points are in README.md — 
 ## Invariants (do not break)
 
 - Cargo never floats and never intersects: every mutation of items ends with `settle()` (`core/physics.ts`);
-  drag/resize previews compute heights via `supportHeight` / `groupBaseY`, the user never sets Y.
+  drag/resize previews compute heights via `supportHeight` / `restingLevels`, the user never sets Y freely.
+  A dragged group keeps the level closest to the one it had (`MoveContext.preferY`), so it slides under a
+  "bridge" it fits under; PgUp/PgDn and the level buttons of `SelectionView` pick another resting level.
+- Fixed cargo (`CargoItem.locked`) and what it stands on (`pinnedIds()`, `core/physics.ts`) is never moved,
+  turned or resized: the store refuses it, the scene does not start a tool on it (`SceneEngine.isMovable`,
+  also false in the `lockCargo` view mode), autoload leaves it in place. New edit actions must check it.
+  `locked` is part of the plan: `backend/app/schemas/plan_data.py` knows it.
 - `src/core` is pure logic (no three.js, no React) and covered by `core.test.ts` / `autoload.test.ts`; add
   tests there for new rules.
 - Autoload (`core/autoload.ts`) only moves cargo from the dock (or everything with `repackAll`) of the chosen
@@ -58,9 +66,25 @@ Architecture, controls, API endpoints and extension points are in README.md — 
   popups Radix-based (role=menu/dialog/listbox) so the guard covers them.
 - Plans come from the server: the editor loads one with `store.openPlan()` (fresh undo history) and
   `editor/planSync.ts` autosaves every change of bodies/items (PATCH with `version`; 409 → conflict
-  dialog). Only display settings are persisted in localStorage (`loader3d:settings`).
+  dialog). Display settings belong to the account: `store/accountSync.ts` applies `user.settings` on login
+  and PATCHes `/users/me/settings` on change; nothing of the app is kept in localStorage except the
+  "was signed in" flag of `useAuth` (no token). A new setting goes into `Settings`/`DEFAULT_SETTINGS`
+  (`useStore.ts`) and `DisplaySettingsIn` (`backend/app/schemas/auth.py`).
+- Tiers exist only with `TIERS_ENABLED=true` (root `.env`, default false): the API then sends `subscription`
+  and enforces limits; the frontend gets the same variable at build time as `TIERS_ENABLED`
+  (`src/lib/tiers.ts`, `define` in vite.config.ts). Off — no tariff word anywhere in the UI: gate new
+  tariff UI on `TIERS_ENABLED` or on `user.subscription` (null when off).
+- Tiers: limits are enforced by the API (`backend/app/tiers.py`, checked in `routers/plans.py`) and mirrored
+  for the UI in `src/lib/tiers.ts` (prices, texts, the pricing table) — change both. The store refuses
+  vehicles/items over `limits` (`limitHit` → upgrade dialog); autoload and the step-by-step PDF are hidden
+  behind `useFeature()`. There is no online payment: admins assign paid tiers.
+- The landing page (`pages/LandingPage.tsx`, `Shell.tsx`) is rendered on the server by
+  `scripts/prerender.mjs` and hydrated by `main.tsx`: nothing it imports may touch `window`/`document`
+  while rendering or at module level, and its first render must not depend on the browser. The FAQ there is
+  also the FAQPage JSON-LD (`src/prerender.tsx`).
 - The access token is kept in memory by `api/client.ts`; on 401 it refreshes once via the cookie and
   retries. Never store tokens in localStorage.
+- Admin API (`routers/admin.py`) needs `AdminAuth`; an admin cannot block, demote or delete themselves.
 - Backend: every route is under `/api`; JSON is camelCase (`schemas/base.py` `ApiModel`); errors are
   `ApiError` with an English `code` and a Russian `message`. Plan contents are the frontend's `Plan`
   validated by `schemas/plan_data.py` — when `src/core/types.ts` or the limits in `presets.ts`/`item.ts`

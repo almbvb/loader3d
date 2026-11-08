@@ -4,6 +4,8 @@ import {
   ChevronRight,
   Copy,
   Crosshair,
+  Lock,
+  LockOpen,
   PackagePlus,
   PanelRightClose,
   Plus,
@@ -40,7 +42,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { plural } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { NumberField, Stepper, WeightField } from './fields';
-import { usePlacements, useStats, useUnits } from './hooks';
+import { ProBadge } from '@/components/UpgradeDialog';
+import { useFeature, useOpenAutoload, usePinned, usePlacements, useStats, useUnits } from './hooks';
 
 const ITEMS = ['груз', 'груза', 'грузов'] as const;
 
@@ -186,21 +189,25 @@ function AutoloadCard() {
   const stats = useStats();
   const activeId = useStore((s) => s.activeVehicleId);
   const many = useStore((s) => s.vehicles.length > 1);
-  const setAutoloadOpen = useUi((s) => s.setAutoloadOpen);
+  const openAutoload = useOpenAutoload();
+  const locked = !useFeature('autoload');
   const dock = stats.vehicles.find((v) => v.id === activeId) ?? { dock: stats.dock, dockWeight: stats.dockWeight };
   if (dock.dock === 0) return null;
   return (
     <div className="border-b p-3">
       <button
         type="button"
-        onClick={() => setAutoloadOpen(true)}
+        onClick={openAutoload}
         className="group/auto flex w-full items-center gap-3 rounded-xl border border-primary/25 bg-primary/5 p-2.5 text-left transition-colors outline-none hover:bg-primary/10 focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm shadow-primary/30">
           <WandSparkles className="size-[18px]" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">{many ? 'Загрузить в машину' : 'Загрузить в кузов'}</span>
+          <span className="flex items-center gap-1.5 text-sm font-semibold">
+            {many ? 'Загрузить в машину' : 'Загрузить в кузов'}
+            {locked && <ProBadge />}
+          </span>
           <span className="block truncate text-xs text-muted-foreground">
             На доке {plural(dock.dock, ITEMS)}
             {dock.dockWeight > 0 && ` · ${formatWeight(dock.dockWeight)}`} — разложим автоматически
@@ -216,7 +223,7 @@ function CargoList() {
   const items = useStore((s) => s.items);
   const selectedId = useStore((s) => s.selectedId);
   const clearItems = useStore((s) => s.clearItems);
-  const setAutoloadOpen = useUi((s) => s.setAutoloadOpen);
+  const openAutoload = useOpenAutoload();
   const placements = usePlacements();
 
   return (
@@ -228,7 +235,7 @@ function CargoList() {
           <div className="ml-auto flex items-center">
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => setAutoloadOpen(true)} aria-label="Автозагрузка">
+                <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={openAutoload} aria-label="Автозагрузка">
                   <WandSparkles />
                 </Button>
               </TooltipTrigger>
@@ -338,7 +345,10 @@ function CargoRow({ item, placement, selected }: { item: CargoItem; placement?: 
             {item.seq}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm leading-tight font-medium">{item.name}</span>
+            <span className="flex items-center gap-1 truncate text-sm leading-tight font-medium">
+              <span className="truncate">{item.name}</span>
+              {item.locked && <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Зафиксирован" />}
+            </span>
             <span className="block truncate text-xs text-muted-foreground tabular-nums">
               {formatDims(item.dims, units)}
               {item.weight ? ` · ${formatWeight(item.weight)}` : ''}
@@ -368,7 +378,7 @@ const AXES: Array<{ axis: RotationAxis; label: string; hint: string; keys: strin
 ];
 
 /** Quarter turns: about the vertical always, about X and Z when tilting is on. */
-function RotateControls({ item }: { item: CargoItem }) {
+function RotateControls({ item, disabled }: { item: CargoItem; disabled: boolean }) {
   const rotateItem = useStore((s) => s.rotateItem);
   const allowTilt = useStore((s) => s.settings.allowTilt);
   const setSetting = useStore((s) => s.setSetting);
@@ -384,6 +394,7 @@ function RotateControls({ item }: { item: CargoItem }) {
                 size="sm"
                 className="px-2 tabular-nums"
                 aria-label={`Повернуть: ${a.hint}`}
+                disabled={disabled}
                 onClick={() => rotateItem(item.id, a.axis)}
               >
                 <RotateCw />
@@ -406,6 +417,8 @@ function RotateControls({ item }: { item: CargoItem }) {
 
 function ItemInspector({ item, units }: { item: CargoItem; units: Units }) {
   const updateItem = useStore((s) => s.updateItem);
+  const setLocked = useStore((s) => s.setLocked);
+  const pinned = usePinned().has(item.id);
   const duplicateItem = useStore((s) => s.duplicateItem);
   const removeItem = useStore((s) => s.removeItem);
   const [name, setName] = useState(item.name);
@@ -418,6 +431,9 @@ function ItemInspector({ item, units }: { item: CargoItem; units: Units }) {
   const setDim = (key: keyof Dims) => (v: number) => updateItem(item.id, { dims: { ...item.dims, [key]: v } });
 
   const actions = [
+    item.locked
+      ? { icon: LockOpen, label: 'Освободить', keys: 'L', run: () => setLocked(item.id, false) }
+      : { icon: Lock, label: 'Зафиксировать на месте', keys: 'L', run: () => setLocked(item.id, true) },
     { icon: Copy, label: 'Дублировать', keys: 'Ctrl+D', run: () => duplicateItem(item.id) },
     { icon: Crosshair, label: 'Показать на сцене', keys: 'F', run: () => getEngine()?.focusItem(item.id) },
   ];
@@ -437,18 +453,26 @@ function ItemInspector({ item, units }: { item: CargoItem; units: Units }) {
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
         />
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      {pinned && (
+        <p className="flex items-start gap-2 rounded-lg bg-muted px-2.5 py-2 text-xs text-muted-foreground">
+          <Lock className="mt-px size-3.5 shrink-0" />
+          {item.locked
+            ? 'Зафиксирован: не двигается, не поворачивается и не меняет размер. Грузы под ним — тоже.'
+            : 'На этом грузе стоит зафиксированный — двигать, поворачивать и менять размер нельзя.'}
+        </p>
+      )}
+      <fieldset disabled={pinned} className="grid grid-cols-3 gap-2 disabled:opacity-60">
         <NumberField label="Ширина" value={item.dims.w} units={units} onCommit={setDim('w')} />
         <NumberField label="Высота" value={item.dims.h} units={units} onCommit={setDim('h')} />
         <NumberField label="Длина" value={item.dims.l} units={units} onCommit={setDim('l')} />
-      </div>
+      </fieldset>
       <div className="grid grid-cols-3 items-end gap-2">
         <WeightField label="Вес" kg={item.weight} max={ITEM_WEIGHT_LIMIT} onCommit={(kg) => updateItem(item.id, { weight: kg })} />
         <p className="col-span-2 pb-2 text-xs text-muted-foreground">
           {describeOrientation(item.orientation)} · {formatVolume(item.dims.l * item.dims.w * item.dims.h)}
         </p>
       </div>
-      <RotateControls item={item} />
+      <RotateControls item={item} disabled={pinned} />
       <div className="flex items-center gap-1">
         <div className="mr-auto flex flex-wrap gap-1.5" role="radiogroup" aria-label="Цвет">
           {CARGO_COLORS.map((c) => (

@@ -26,6 +26,12 @@ interface Tween {
 
 const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 const IDENTITY = new Quaternion();
+const WORLD_UP = new Vector3(0, 1, 0);
+/** Keyboard flight speed: this share of the distance to the target per second (at least 3 m/s). */
+const FLY_SPEED = 0.9;
+const FLY_MIN_SPEED = 300;
+const flyForward = new Vector3();
+const flySide = new Vector3();
 
 /**
  * Orbit camera: rotate with LMB / one finger on empty space, pan with RMB / two fingers,
@@ -62,6 +68,28 @@ export class CameraRig {
   setLocked(locked: boolean): void {
     this.controls.enableRotate = !locked;
     this.controls.enablePan = !locked;
+  }
+
+  /**
+   * WASD: slides the camera with its target over the ground — `forward` along the view direction,
+   * `right` across it (−1…1) — for `dt` ms. Faster when far away, ×3 with `fast`. False when locked.
+   */
+  fly(forward: number, right: number, dt: number, fast: boolean): boolean {
+    if (!this.controls.enablePan) return false;
+    this.tween = null;
+    this.camera.getWorldDirection(flyForward);
+    flyForward.y = 0;
+    // Looking straight down: "forward" is the top of the screen.
+    if (flyForward.lengthSq() < 1e-6) flyForward.copy(WORLD_UP).applyQuaternion(this.camera.quaternion).setY(0);
+    flyForward.normalize();
+    flySide.crossVectors(flyForward, WORLD_UP).normalize();
+    const distance = this.camera.position.distanceTo(this.controls.target);
+    const step = (Math.max(FLY_MIN_SPEED, distance * FLY_SPEED) * (fast ? 3 : 1) * dt) / 1000;
+    const delta = flyForward.multiplyScalar(forward * step).addScaledVector(flySide, right * step);
+    this.controls.target.add(delta);
+    this.camera.position.add(delta);
+    this.onChange();
+    return true;
   }
 
   setView(preset: ViewPreset, bounds: Box, animate = true): void {

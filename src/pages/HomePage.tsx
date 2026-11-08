@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { errorMessage } from '@/api/client';
 import type { PlanSort, PlanSummary } from '@/api/types';
 import { AppHeader } from '@/components/AppHeader';
+import { UpgradeDialog, useUpgrade } from '@/components/UpgradeDialog';
 import { PlanCard, PlanCardSkeleton } from '@/components/plans/PlanCard';
 import { CreatePlanDialog, DeletePlanDialog, RenamePlanDialog } from '@/components/plans/PlanDialogs';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -16,6 +17,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { plural } from '@/lib/format';
 import { forgetLegacyPlan, readLegacyPlan, readPlanFile } from '@/lib/planFiles';
 import { useCreatePlan, usePlanList } from '@/lib/plansQuery';
+import { useAuth } from '@/store/useAuth';
 
 const SORTS: Array<{ value: PlanSort; label: string }> = [
   { value: '-updatedAt', label: 'Недавно изменённые' },
@@ -52,6 +54,12 @@ export function HomePage() {
   const total = list.data?.pages[0]?.total ?? 0;
   const loading = list.isPending;
   const nothingYet = !loading && !list.isError && total === 0 && q === '';
+  const subscription = useAuth((s) => s.user?.subscription);
+  const planLimit = subscription?.limits.plans ?? null;
+  const atPlanLimit = planLimit !== null && q === '' && !loading && total >= planLimit;
+  const showUpgrade = useUpgrade((s) => s.show);
+  const limitReason = `На тарифе «${subscription?.name}» можно сохранить до ${plural(planLimit ?? 0, ['схемы', 'схем', 'схем'])}. На «Профи» — без ограничений.`;
+  const guard = (action: () => void) => () => (atPlanLimit ? showUpgrade(limitReason) : action());
 
   const importFile = async (file: File) => {
     try {
@@ -80,10 +88,10 @@ export function HomePage() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={create.isPending}>
+            <Button variant="outline" onClick={guard(() => fileRef.current?.click())} disabled={create.isPending}>
               <FileUp /> Импорт JSON
             </Button>
-            <Button onClick={() => setCreateOpen(true)}>
+            <Button onClick={guard(() => setCreateOpen(true))}>
               <Plus /> Новая схема
             </Button>
           </div>
@@ -99,6 +107,15 @@ export function HomePage() {
             }}
           />
         </div>
+
+        {planLimit !== null && q === '' && !loading && total > 0 && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Сохранено {total} из {planLimit} на тарифе «{subscription?.name}».{' '}
+            <button type="button" className="font-medium text-primary hover:underline" onClick={() => showUpgrade(limitReason)}>
+              Снять ограничение
+            </button>
+          </p>
+        )}
 
         <LegacyPlanBanner />
 
@@ -208,6 +225,7 @@ export function HomePage() {
           )}
         </section>
       </main>
+      {subscription && <UpgradeDialog />}
 
       <CreatePlanDialog open={createOpen} onOpenChange={setCreateOpen} />
       <RenamePlanDialog plan={renaming} onClose={() => setRenaming(null)} />

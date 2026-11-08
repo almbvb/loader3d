@@ -1,4 +1,4 @@
-import { ChevronDown, LayoutGrid, LogOut, UserRound } from 'lucide-react';
+import { ChevronDown, LayoutGrid, LogOut, ShieldCheck, Sparkles, UserRound } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -49,13 +49,27 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuItem onSelect={() => navigate('/')}>
+          <DropdownMenuItem onSelect={() => navigate('/plans')}>
             <LayoutGrid /> Мои схемы
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => navigate('/account')}>
             <UserRound /> Аккаунт и устройства
           </DropdownMenuItem>
+          {user.subscription && (
+            <DropdownMenuItem onSelect={() => navigate('/account#subscription')}>
+              <Sparkles /> Тариф
+              <span className="ml-auto text-xs text-muted-foreground">{user.subscription.name}</span>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
+        {user.isAdmin && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => navigate('/admin')}>
+              <ShieldCheck /> Администрирование
+            </DropdownMenuItem>
+          </>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => void signOut()}>
           <LogOut /> Выйти

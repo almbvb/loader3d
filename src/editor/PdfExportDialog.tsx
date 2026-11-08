@@ -22,6 +22,8 @@ import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
+import { ProBadge } from '@/components/UpgradeDialog';
+import { useFeature } from './hooks';
 import { usePlanSync } from './planSync';
 
 const ORIENTATIONS: Array<{ value: PdfOrientation; label: string; icon: typeof RectangleHorizontal }> = [
@@ -69,11 +71,13 @@ function PdfForm({ busy, setBusy }: { busy: boolean; setBusy(busy: boolean): voi
   const vehicles = useStore((s) => s.vehicles);
   /** A vehicle id, or 'all'. */
   const [scope, setScope] = useState(() => useStore.getState().activeVehicleId);
-  const { orientation, mode, direction, projection } = saved;
+  const stepsAllowed = useFeature('pdfSteps');
+  const { orientation, direction, projection } = saved;
+  const mode: PdfMode = stepsAllowed ? saved.mode : 'overview';
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const options: PdfOptions = { ...saved, fileName: fileName.trim() };
+    const options: PdfOptions = { ...saved, mode, fileName: fileName.trim() };
     setBusy(true);
     setProgress(null);
     try {
@@ -179,8 +183,9 @@ function PdfForm({ busy, setBusy }: { busy: boolean; setBusy(busy: boolean): voi
               </SelectTrigger>
               <SelectContent>
                 {MODES.map((m) => (
-                  <SelectItem key={m.value} value={m.value}>
+                  <SelectItem key={m.value} value={m.value} disabled={m.value === 'steps' && !stepsAllowed}>
                     {m.label}
+                    {m.value === 'steps' && !stepsAllowed && <ProBadge />}
                   </SelectItem>
                 ))}
               </SelectContent>

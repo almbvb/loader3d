@@ -62,6 +62,8 @@ export interface CargoItem {
   color: string;
   /** Gross weight, kg. Missing in plans made before weights existed: treated as unknown (0). */
   weight?: number;
+  /** Fixed in place: not moved, turned or resized (see pinnedIds). Missing — free. */
+  locked?: boolean;
 }
 
 export type BodyKind = 'semi' | 'truck' | 'trailer';
